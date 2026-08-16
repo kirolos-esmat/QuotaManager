@@ -403,7 +403,7 @@ def test_mac_deny_list_always_blocks_even_when_user_ok(database):
         svc = QuotaService(d, timezone="Africa/Cairo")
         await d.set_bundle(_db.Bundle(total_gb=10.0, reset_day=1))
         u = await d.create_user("A", _db.QUOTA_AUTO)
-        d1 = await d.upsert_device("AA:AA:AA:AA:AA:01", "p1", user_id=u.id)
+        await d.upsert_device("AA:AA:AA:AA:AA:01", "p1", user_id=u.id)
         await svc.open_period()
 
         assert (await svc.snapshot_state())["aa:aa:aa:aa:aa:01"]["blocked"] is False
