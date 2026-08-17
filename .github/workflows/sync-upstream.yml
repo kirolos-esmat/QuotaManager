@@ -17,6 +17,17 @@ jobs:
     name: Sync with Upstream
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout Fork Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git User
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Synchronize Upstream Branch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -26,8 +37,15 @@ jobs:
           import os
           import sys
           import json
+          import subprocess
           import urllib.request
           import urllib.error
+
+          def run_cmd(cmd, check=True):
+              res = subprocess.run(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              if check and res.returncode != 0:
+                  raise subprocess.CalledProcessError(res.returncode, cmd, res.stdout, res.stderr)
+              return res.returncode, res.stdout.strip(), res.stderr.strip()
 
           def sync_fork():
               repo = os.environ.get("GITHUB_REPOSITORY")
@@ -46,26 +64,6 @@ jobs:
                   "User-Agent": "sync-upstream-action",
               }
 
-              def api_call(endpoint, method="GET", data=None):
-                  clean_ep = endpoint.lstrip("/")
-                  url = f"https://api.github.com/{clean_ep}"
-                  req = urllib.request.Request(url, headers=headers, method=method)
-                  if data is not None:
-                      req.data = json.dumps(data).encode("utf-8")
-                      req.add_header("Content-Type", "application/json")
-                  try:
-                      with urllib.request.urlopen(req) as resp:
-                          body = resp.read().decode("utf-8")
-                          return resp.status, json.loads(body) if body else {}
-                  except urllib.error.HTTPError as e:
-                      body = e.read().decode("utf-8")
-                      try:
-                          return e.code, json.loads(body)
-                      except Exception:
-                          return e.code, {"message": body}
-                  except Exception as e:
-                      return 0, {"message": str(e)}
-
               def write_summary(lines):
                   text = "\n".join(lines) + "\n"
                   print(text)
@@ -76,19 +74,20 @@ jobs:
                       except Exception as e:
                           print(f"::warning::Failed to write step summary: {e}")
 
-              # 1. Fetch Repository Metadata
-              st, repo_data = api_call(f"repos/{repo}")
-              if st != 200:
-                  msg = repo_data.get("message", "Unknown error")
+              # 1. Fetch Dynamic Parent Repository Metadata from GitHub API
+              req = urllib.request.Request(f"https://api.github.com/repos/{repo}", headers=headers)
+              try:
+                  with urllib.request.urlopen(req) as resp:
+                      repo_data = json.loads(resp.read().decode("utf-8"))
+              except Exception as e:
                   write_summary([
                       "## Upstream Sync",
                       "",
                       f"**Repository:** `{repo}`",
                       "**Status:** `FAILED`",
                       "",
-                      f"Failed to fetch repository metadata: {msg}"
+                      f"Failed to fetch repository metadata: {e}"
                   ])
-                  print(f"::error::Failed to fetch repository metadata: {msg}")
                   sys.exit(1)
 
               if not repo_data.get("fork"):
@@ -113,72 +112,28 @@ jobs:
                       "",
                       "Could not determine parent repository metadata."
                   ])
-                  print("::error::Could not determine parent repository metadata.")
                   sys.exit(1)
 
               parent_full = parent_info["full_name"]
-              parent_owner = parent_info["owner"]["login"]
 
-              # 2. Check upstream branch exists
-              st, upstream_branch = api_call(f"repos/{parent_full}/branches/{target_branch}")
-              if st != 200:
-                  write_summary([
-                      "## Upstream Sync",
-                      "",
-                      f"**Repository:** `{repo}`",
-                      f"**Upstream:** `{parent_full}`",
-                      f"**Branch:** `{target_branch}`",
-                      "",
-                      "**Status:** `FAILED`",
-                      "",
-                      f"Upstream branch `{target_branch}` not found in `{parent_full}`."
-                  ])
-                  print(f"::error::Upstream branch {target_branch} does not exist in {parent_full}.")
-                  sys.exit(1)
-              upstream_sha = upstream_branch["commit"]["sha"]
+              # 2. Add and Fetch Upstream Remote
+              run_cmd(f"git remote add upstream https://github.com/{parent_full}.git || git remote set-url upstream https://github.com/{parent_full}.git")
+              run_cmd(f"git fetch upstream {target_branch}")
 
-              # 3. Check fork branch exists
-              st, fork_branch = api_call(f"repos/{repo}/branches/{target_branch}")
-              if st != 200:
-                  write_summary([
-                      "## Upstream Sync",
-                      "",
-                      f"**Repository:** `{repo}`",
-                      f"**Upstream:** `{parent_full}`",
-                      f"**Branch:** `{target_branch}`",
-                      "",
-                      "**Status:** `FAILED`",
-                      "",
-                      f"Fork branch `{target_branch}` not found in `{repo}`."
-                  ])
-                  print(f"::error::Fork branch {target_branch} does not exist in {repo}.")
-                  sys.exit(1)
-              fork_sha = fork_branch["commit"]["sha"]
+              # 3. Inspect Commit Relationship
+              _, fork_sha, _ = run_cmd("git rev-parse HEAD")
+              _, upstream_sha, _ = run_cmd(f"git rev-parse upstream/{target_branch}")
 
-              # 4. Compare upstream with fork
-              st, cmp_data = api_call(f"repos/{repo}/compare/{parent_owner}:{target_branch}...{target_branch}")
-              if st != 200:
-                  msg = cmp_data.get("message", "Unknown error")
-                  write_summary([
-                      "## Upstream Sync",
-                      "",
-                      f"**Repository:** `{repo}`",
-                      f"**Upstream:** `{parent_full}`",
-                      f"**Branch:** `{target_branch}`",
-                      "",
-                      "**Status:** `FAILED`",
-                      "",
-                      f"Failed to compare branches: {msg}"
-                  ])
-                  print(f"::error::Failed to compare branches: {msg}")
-                  sys.exit(1)
+              _, behind_str, _ = run_cmd(f"git rev-list --count HEAD..upstream/{target_branch}")
+              _, ahead_str, _ = run_cmd(f"git rev-list --count upstream/{target_branch}..HEAD")
+              behind_count = int(behind_str)
+              ahead_count = int(ahead_str)
 
-              status = cmp_data.get("status")
-              ahead_by = cmp_data.get("ahead_by", 0)
-              behind_by = cmp_data.get("behind_by", 0)
+              print(f"Sync check: upstream={parent_full}:{target_branch} (behind={behind_count}, ahead={ahead_count})")
 
-              # STATE 1: UP TO DATE
-              if status == "identical" or (ahead_by == 0 and behind_by == 0):
+              # CASE 1: Fork is already up to date with upstream
+              if behind_count == 0:
+                  msg = "The fork already matches upstream/main." if ahead_count == 0 else f"The fork is fully up to date with upstream/main (contains {ahead_count} local custom commit(s))."
                   write_summary([
                       "## Upstream Sync",
                       "",
@@ -188,19 +143,55 @@ jobs:
                       "",
                       "**Status:** `UP TO DATE`",
                       "",
-                      "The fork already matches upstream/main.",
-                      "No changes were made."
+                      msg,
+                      "No changes were needed."
                   ])
-                  print("Fork is already up to date.")
+                  print("Fork is already up to date with upstream.")
                   sys.exit(0)
 
-              # STATE 2: FORK BEHIND
-              elif status == "behind" or (ahead_by == 0 and behind_by > 0):
-                  print(f"Fork is behind upstream by {behind_by} commit(s). Synchronizing safely...")
-                  st_merge, merge_resp = api_call(f"repos/{repo}/merge-upstream", method="POST", data={"branch": target_branch})
-                  if st_merge == 200:
-                      _, updated_branch = api_call(f"repos/{repo}/branches/{target_branch}")
-                      new_sha = updated_branch.get("commit", {}).get("sha", "unknown")
+              # CASE 2: Fork is clean & behind upstream -> Fast-Forward Merge
+              elif ahead_count == 0 and behind_count > 0:
+                  print(f"Fork is cleanly behind upstream by {behind_count} commit(s). Fast-forwarding...")
+                  run_cmd(f"git merge --ff-only upstream/{target_branch}")
+                  run_cmd(f"git push origin {target_branch}")
+                  _, new_sha, _ = run_cmd("git rev-parse HEAD")
+                  write_summary([
+                      "## Upstream Sync",
+                      "",
+                      f"**Repository:** `{repo}`",
+                      f"**Upstream:** `{parent_full}`",
+                      f"**Branch:** `{target_branch}`",
+                      "",
+                      "**Status:** `SYNCED (FAST-FORWARD)`",
+                      "",
+                      f"- **Previous fork commit:** `{fork_sha[:7]}`",
+                      f"- **New fork commit:** `{new_sha[:7]}`",
+                      f"- **Commits synchronized:** {behind_count}",
+                      "",
+                      "Fork successfully fast-forwarded to upstream."
+                  ])
+                  print("Fast-forward merge pushed successfully.")
+                  sys.exit(0)
+
+              # CASE 3: Fork has custom commits & upstream has new commits -> Automatic Safe Merge
+              else:
+                  print(f"Fork has {ahead_count} custom commit(s) and is behind upstream by {behind_count} commit(s). Attempting auto-merge...")
+                  
+                  # List upstream new commits
+                  _, upstream_commits, _ = run_cmd(f"git log --oneline HEAD..upstream/{target_branch} -n 10")
+                  commit_list = [f"- `{line}`" for line in upstream_commits.splitlines()]
+
+                  # Attempt non-conflicting merge
+                  merge_code, merge_out, merge_err = run_cmd(
+                      f'git merge --no-edit -m "ci: auto-sync with upstream {parent_full}" upstream/{target_branch}',
+                      check=False
+                  )
+
+                  if merge_code == 0:
+                      # Push merge commit
+                      run_cmd(f"git push origin {target_branch}")
+                      _, new_sha, _ = run_cmd("git rev-parse HEAD")
+
                       write_summary([
                           "## Upstream Sync",
                           "",
@@ -208,19 +199,22 @@ jobs:
                           f"**Upstream:** `{parent_full}`",
                           f"**Branch:** `{target_branch}`",
                           "",
-                          "**Status:** `SYNCED`",
+                          "**Status:** `SYNCED (AUTO-MERGED)`",
                           "",
                           f"- **Previous fork commit:** `{fork_sha[:7]}`",
-                          f"- **New fork commit:** `{new_sha[:7]}`",
-                          f"- **Commits synchronized:** {behind_by}",
+                          f"- **New merge commit:** `{new_sha[:7]}`",
+                          f"- **Commits integrated from upstream:** {behind_count}",
                           "",
-                          "Upstream contained new commits.",
-                          "Fork successfully synchronized."
+                          "### Integrated Upstream Commits",
+                          *commit_list,
+                          "",
+                          "Upstream changes were automatically merged into fork without conflicts."
                       ])
-                      print("Upstream contained new commits. Fork successfully synchronized.")
+                      print("Auto-merge succeeded and pushed to fork.")
                       sys.exit(0)
                   else:
-                      err_msg = merge_resp.get("message", "Unknown merge error")
+                      # Conflict detected -> abort safely
+                      run_cmd("git merge --abort", check=False)
                       write_summary([
                           "## Upstream Sync",
                           "",
@@ -228,79 +222,19 @@ jobs:
                           f"**Upstream:** `{parent_full}`",
                           f"**Branch:** `{target_branch}`",
                           "",
-                          "**Status:** `SYNC FAILED`",
+                          "**Status:** `MERGE CONFLICT - MANUAL RESOLUTION REQUIRED`",
                           "",
-                          f"Automatic synchronization failed: {err_msg}"
+                          f"Automatic merge failed due to merge conflicts between fork and upstream ({parent_full}).",
+                          "",
+                          "- The working tree was left completely untouched.",
+                          "- No force push was performed.",
+                          "- Please resolve conflicts manually locally and push to main.",
+                          "",
+                          "### Upstream Commits to Integrate",
+                          *commit_list
                       ])
-                      print(f"::error::Merge upstream failed: {err_msg}")
-                      sys.exit(1)
-
-              # STATE 3: FORK AHEAD
-              elif status == "ahead" or (ahead_by > 0 and behind_by == 0):
-                  commit_lines = []
-                  for c in cmp_data.get("commits", [])[:10]:
-                      c_sha = c.get("sha", "")[:7]
-                      c_msg = c.get("commit", {}).get("message", "").splitlines()[0]
-                      commit_lines.append(f"- `{c_sha}` {c_msg}")
-
-                  write_summary([
-                      "## Upstream Sync",
-                      "",
-                      f"**Repository:** `{repo}`",
-                      f"**Upstream:** `{parent_full}`",
-                      f"**Branch:** `{target_branch}`",
-                      "",
-                      "**Status:** `MANUAL INTERVENTION REQUIRED`",
-                      "",
-                      f"The fork contains {ahead_by} custom commit(s) not present in upstream.",
-                      "",
-                      f"- **Fork commit:** `{fork_sha[:7]}`",
-                      f"- **Upstream commit:** `{upstream_sha[:7]}`",
-                      "",
-                      "### Unique Fork Commits",
-                      *commit_lines,
-                      "",
-                      "No changes were made.",
-                      "No force push was performed."
-                  ])
-                  print("The fork contains custom commits. Marking manual intervention required.")
-                  sys.exit(0)
-
-              # STATE 4: DIVERGED
-              elif status == "diverged" or (ahead_by > 0 and behind_by > 0):
-                  write_summary([
-                      "## Upstream Sync",
-                      "",
-                      f"**Repository:** `{repo}`",
-                      f"**Upstream:** `{parent_full}`",
-                      f"**Branch:** `{target_branch}`",
-                      "",
-                      "**Status:** `DIVERGED`",
-                      "",
-                      f"The fork and upstream contain different commits (ahead by {ahead_by}, behind by {behind_by}).",
-                      "",
-                      f"- **Fork commit:** `{fork_sha[:7]}`",
-                      f"- **Upstream commit:** `{upstream_sha[:7]}`",
-                      "",
-                      "Automatic synchronization was intentionally stopped.",
-                      "Manual merge/reconciliation is required."
-                  ])
-                  print("::warning::The fork and upstream contain different commits. Automatic sync stopped.")
-                  sys.exit(0)
-
-              else:
-                  write_summary([
-                      "## Upstream Sync",
-                      "",
-                      f"**Repository:** `{repo}`",
-                      f"**Upstream:** `{parent_full}`",
-                      f"**Branch:** `{target_branch}`",
-                      "",
-                      f"**Status:** `UNKNOWN ({status})`",
-                      "",
-                      "Unrecognized comparison status."
-                  ])
-                  sys.exit(1)
+                      print("::warning::Merge conflict detected between upstream and fork. Auto-merge aborted safely.")
+                      sys.exit(0)
 
           sync_fork()
           EOF
