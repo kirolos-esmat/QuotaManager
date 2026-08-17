@@ -28,7 +28,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Synchronize Upstream Branch
+      - name: Synchronize Upstream Branch and Releases
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -64,6 +64,26 @@ jobs:
                   "User-Agent": "sync-upstream-action",
               }
 
+              def api_call(endpoint, method="GET", data=None):
+                  clean_ep = endpoint.lstrip("/")
+                  url = f"https://api.github.com/{clean_ep}"
+                  req = urllib.request.Request(url, headers=headers, method=method)
+                  if data is not None:
+                      req.data = json.dumps(data).encode("utf-8")
+                      req.add_header("Content-Type", "application/json")
+                  try:
+                      with urllib.request.urlopen(req) as resp:
+                          body = resp.read().decode("utf-8")
+                          return resp.status, json.loads(body) if body else {}
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8")
+                      try:
+                          return e.code, json.loads(body)
+                      except Exception:
+                          return e.code, {"message": body}
+                  except Exception as e:
+                      return 0, {"message": str(e)}
+
               def write_summary(lines):
                   text = "\n".join(lines) + "\n"
                   print(text)
@@ -75,18 +95,16 @@ jobs:
                           print(f"::warning::Failed to write step summary: {e}")
 
               # 1. Fetch Dynamic Parent Repository Metadata from GitHub API
-              req = urllib.request.Request(f"https://api.github.com/repos/{repo}", headers=headers)
-              try:
-                  with urllib.request.urlopen(req) as resp:
-                      repo_data = json.loads(resp.read().decode("utf-8"))
-              except Exception as e:
+              st, repo_data = api_call(f"repos/{repo}")
+              if st != 200:
+                  msg = repo_data.get("message", "Unknown error")
                   write_summary([
                       "## Upstream Sync",
                       "",
                       f"**Repository:** `{repo}`",
                       "**Status:** `FAILED`",
                       "",
-                      f"Failed to fetch repository metadata: {e}"
+                      f"Failed to fetch repository metadata: {msg}"
                   ])
                   sys.exit(1)
 
@@ -116,11 +134,32 @@ jobs:
 
               parent_full = parent_info["full_name"]
 
-              # 2. Add and Fetch Upstream Remote
+              # 2. Add Upstream Remote and Fetch Branch + Tags
               run_cmd(f"git remote add upstream https://github.com/{parent_full}.git || git remote set-url upstream https://github.com/{parent_full}.git")
-              run_cmd(f"git fetch upstream {target_branch}")
+              run_cmd(f"git fetch --tags upstream {target_branch}")
+              run_cmd("git push origin --tags", check=False)
 
-              # 3. Inspect Commit Relationship
+              # 3. Sync GitHub Releases from Upstream
+              try:
+                  st_up, up_releases = api_call(f"repos/{parent_full}/releases")
+                  st_fork, fork_releases = api_call(f"repos/{repo}/releases")
+                  if st_up == 200 and st_fork == 200 and isinstance(up_releases, list) and isinstance(fork_releases, list):
+                      existing_tags = {r.get("tag_name") for r in fork_releases}
+                      for r in up_releases:
+                          tag = r.get("tag_name")
+                          if tag and tag not in existing_tags and not r.get("draft"):
+                              print(f"Mirroring upstream release {tag} to fork...")
+                              api_call(f"repos/{repo}/releases", method="POST", data={
+                                  "tag_name": tag,
+                                  "name": r.get("name") or tag,
+                                  "body": r.get("body") or "",
+                                  "draft": False,
+                                  "prerelease": r.get("prerelease", False)
+                              })
+              except Exception as e:
+                  print(f"::warning::Failed to sync releases: {e}")
+
+              # 4. Inspect Commit Relationship
               _, fork_sha, _ = run_cmd("git rev-parse HEAD")
               _, upstream_sha, _ = run_cmd(f"git rev-parse upstream/{target_branch}")
 
@@ -144,7 +183,7 @@ jobs:
                       "**Status:** `UP TO DATE`",
                       "",
                       msg,
-                      "No changes were needed."
+                      "Releases and tags synchronized. No branch changes needed."
                   ])
                   print("Fork is already up to date with upstream.")
                   sys.exit(0)
