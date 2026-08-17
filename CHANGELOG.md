@@ -6,40 +6,47 @@ The version is the single source of truth in `quota/version.py`; a release tag
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-08-17
+
 ### Added
 
-- **MAC whitelist / blacklist in the Network tab** (`quota/db.py` +
-  `quota/service.py` + `api/app.py` + `api/schemas.py` + `web/index.html` +
-  `web/assets/app.js` + `web/assets/styles.css`): a `mac_lists` table
-  (`PRIMARY KEY (mac, kind)` — a MAC can sit in BOTH lists) holds two
-  operator-maintained lists; `GET/POST /api/mac-lists` (`MacListsUpdate`,
-  optional `allow`/`deny` MAC lists, lowercased/deduped/sorted on save)
-  round-trips them. Enforcement rides the existing resolved-state path:
-  `resolve_device_state` gains `allow_listed` / `deny_listed` and the
-  precedence is **deny list > user admin cut > device admin cut > allow list >
-  quota (unless bypass) > ok** — a blacklisted MAC is always cut (even with
-  `bypass` or an allow-list entry), a whitelisted MAC is never quota-blocked
-  (manual cuts still win), and membership is resolved at render/enforcement
-  time, never persisted, so removing a MAC restores it immediately. The
-  dashboard Network tab gains a "MAC whitelist / blacklist" block
-  (`#mac-allow-list` / `#mac-deny-list` textareas + `#mac-lists-btn`), the
-  WS-snapshot clobber guard (`macListsDirty`), and a `.mac-lists-grid` 2-column
-  layout (1 column under 900 px). app.js **v=51→52**, styles.css **v=48→49**.
-- **Exempt-from-quota enforcement fix** (`quota/service.py`): the kernel
-  enforcement map (`snapshot_state`) called `quota_blocked_for`, which ignores
-  `users.exempt_quota`, while the dashboard payload and `evaluate_blocks` use
-  `user_quota_blocked` — an exempt over-quota user showed "unlimited" in the
-  UI but was still cut at the kernel. `snapshot_state` now uses
-  `user_quota_blocked`, so the UI, `/report` and the nftables drop set agree.
+- **Software updates** — the Admin tab now checks for newer versions, shows
+  what changed ("Show details"), and can install the update right from the
+  dashboard (automatically or on demand).
+- **New devices join disabled** — a device joining for the first time has no
+  data allowance and stays offline until you give it one (Shared or Fixed GB)
+  in its settings.
+- **Bundle type: end-of-month** — choose whether your bundle resets on a fixed
+  day or on the ISP's month-end bill; changing the reset day mid-month no
+  longer loses this month's usage.
+- **WiFi / LAN labels** — each device card now shows how the device connects
+  to the router (WiFi or cable) and whether it is online right now.
+- **MAC whitelist / blacklist** — from the Network tab, allow specific devices
+  to skip the quota, or permanently block others.
+- **Deleting a device is permanent** — a deleted device stays offline instead
+  of quietly reappearing a few seconds later.
+- **Guest limit applies to existing guests** — lowering the max guest accounts
+  turns off the newest over-limit guests right away.
+
+### Changed
+
+- **"Stop new connections" and "Decline random MACs"** now refuse a new device
+  at the network level, so it never even shows up in the list.
+- **Faster and safer internals** — snappier dashboard updates, stronger
+  password protection, and login rate-limiting.
 
 ### Fixed
 
-- **MAC lists could hold a MAC in only one list** (`quota/db.py`): the
-  `mac_lists` table had `mac TEXT PRIMARY KEY`, so `INSERT OR IGNORE` silently
-  dropped a deny entry for a MAC already in the allow list (and vice versa) —
-  a whitelisted device could never be blacklisted. The primary key is now
-  `(mac, kind)`; the table never shipped in a release, so no migration is
-  needed.
+- **"Show details" on an update notification was empty** — the popup now
+  correctly lists what's new in the available version.
+- **Exempt-from-quota users were still cut off** — a user marked "Exempt"
+  is no longer blocked by usage at the network level.
+- **Usage could be wiped when the reset day was changed mid-month** — the
+  current month's usage is now kept.
+- **"Cut existing random-MAC devices" could cut real products** — the sweep
+  now only targets genuinely random addresses.
+- **A device on the whitelist couldn't also be blacklisted** — the two lists
+  now work independently.
 
 ## [0.2.0] — 2026-08-16
 

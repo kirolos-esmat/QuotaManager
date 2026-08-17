@@ -5,8 +5,7 @@ Schema overview
 users          -- every person: quota mode, allowance, enforcement state.
 devices        -- every known MAC: name, owning user, per-device override.
 leases         -- current/known DHCP leases (mac <-> ip).
-suppressed_macs-- guest device MACs the admin manually deleted: while present
-                 they are not auto-registered (cleared once they leave).
+mac_lists      -- operator MAC whitelist/blacklist ('allow' / 'deny').
 bundle_config  -- single row: total_gb, reset_day, current period snapshot.
 usage_daily    -- append-only per-device daily byte totals.
 settings       -- key/value store (admin password hash, flags).
@@ -41,6 +40,8 @@ from quota.engine import GATEWAY_MAC
 
 QUOTA_FIXED = "fixed"
 QUOTA_AUTO = "auto"
+QUOTA_DISABLED = "disabled"  # onboarding lock: 0 GB until the admin assigns
+                             # shared (auto) or fixed; always quota-blocked
 
 BLOCK_OK = "ok"          # allowed, within quota
 BLOCK_QUOTA = "quota"    # exceeded monthly allowance
@@ -89,10 +90,20 @@ class Device:
     #: Rendered as a tag-restricted dnsmasq `server=` line — see
     #: quota/dns_rules.py.
     dns_server: str = ""
-
-    @property
-    def is_blocked(self) -> bool:
-        return self.block_state != BLOCK_OK
+    #: Which NIC the device was last seen on (``ip neigh`` dev — e.g. "eth0",
+    #: "wlan0"). Auto-learned by run.py each maintenance tick; empty when
+    #: ``ip`` is unavailable (non-Linux / degraded boot). Drives the device
+    #: card's WiFi/LAN tag (labels come from config.yaml's ``network.
+    #: interface_tags``).
+    source_interface: str = ""
+    #: Router-side access label auto-learned by the WiFi probe
+    #: (quota/wifi_probe.py + run.py): "WiFi · <SSID>" when the box's monitor
+    #: card hears the device on the air, "LAN" once a leased device has been
+    #: quiet past the grace period. Empty = not yet classified.
+    access_interface: str = ""
+    #: Manual pin: what the admin typed in the device modal ("WiFi · MyNet",
+    #: "LAN1", ...). Wins over the auto label; empty = let the probe decide.
+    access_override: str = ""
 
 
 @dataclass
@@ -137,10 +148,6 @@ class User:
     #: this user that has no override of its own (empty = no override).
     dns_server: str = ""
 
-    @property
-    def is_admin_blocked(self) -> bool:
-        return self.block_state == BLOCK_ADMIN
-
 
 @dataclass
 class DomainRule:
@@ -175,10 +182,25 @@ class Lease:
 class Bundle:
     total_gb: float = 140.0
     reset_day: int = 1
+    #: How the monthly period is bounded: ``"renew_day"`` (the configured
+    #: ``reset_day`` — the ISP's expected renew day) or ``"end_of_month"``
+    #: (a calendar-month bill: the period runs 1st -> 1st and the configured
+    #: ``reset_day`` is ignored).
+    period_type: str = "renew_day"
     # Snapshot of allowances computed at period start (json dict user_id->gb).
     allowances: dict[int, float] = field(default_factory=dict)
     period_start: str = ""   # ISO date of current period start
     period_end: str = ""     # ISO date of next reset
+
+    @property
+    def effective_reset_day(self) -> int:
+        """The reset day actually driving the period grid. An end-of-month
+        bill lets the ISP's month-end day win too (some close on the 25th or
+        28th, not the calendar end): a configured day drives the reset as-is,
+        and 0 falls back to the calendar end (1st of the next month)."""
+        if self.period_type == "end_of_month":
+            return self.reset_day if self.reset_day > 0 else 1
+        return self.reset_day
 
 
 SCHEMA = """
@@ -193,7 +215,10 @@ CREATE TABLE IF NOT EXISTS devices (
     topup_gb         REAL NOT NULL DEFAULT 0,
     limit_down_mbps  REAL NOT NULL DEFAULT 0,
     limit_up_mbps    REAL NOT NULL DEFAULT 0,
-    dns_server       TEXT NOT NULL DEFAULT ''
+    dns_server       TEXT NOT NULL DEFAULT '',
+    source_interface TEXT NOT NULL DEFAULT '',
+    access_interface TEXT NOT NULL DEFAULT '',
+    access_override  TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS leases (
@@ -207,6 +232,7 @@ CREATE TABLE IF NOT EXISTS bundle_config (
     id           INTEGER PRIMARY KEY CHECK (id = 1),
     total_gb     REAL NOT NULL,
     reset_day    INTEGER NOT NULL,
+    period_type  TEXT NOT NULL DEFAULT 'renew_day',
     allowances   TEXT NOT NULL DEFAULT '{}',
     period_start TEXT NOT NULL DEFAULT '',
     period_end   TEXT NOT NULL DEFAULT ''
@@ -268,15 +294,13 @@ CREATE TABLE IF NOT EXISTS users (
     dns_server       TEXT NOT NULL DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS suppressed_macs (
-    mac        TEXT PRIMARY KEY,
-    created_at REAL NOT NULL
-);
-
 -- MAC whitelist/blacklist (quota/service.py): 'allow' = never quota-blocked
 -- (even over allowance), 'deny' = always blocked (even when the user is fine).
 -- Both are enforced at render time via resolve_device_state — no device rows
--- are touched, so removing a MAC from a list restores instantly.
+-- are touched, so removing a MAC from a list restores instantly. The 'deny'
+-- list doubles as the permanent blacklist that a manual user/device DELETE
+-- writes to: a blacklisted MAC never auto-registers and stays kernel-blocked
+-- even with no device row, until the admin removes it in the Network tab.
 CREATE TABLE IF NOT EXISTS mac_lists (
     mac        TEXT NOT NULL,
     kind       TEXT NOT NULL,  -- 'allow' | 'deny'
@@ -350,6 +374,10 @@ class Database:
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._conn.executescript(SCHEMA)
+        # Legacy cleanup: the old guest-deletion `suppressed_macs` table (v20,
+        # pre-blacklist) is orphaned — delete->deny-list replaced it and nothing
+        # references it anymore. Idempotent; a fresh DB simply has no such table.
+        await self._conn.execute("DROP TABLE IF EXISTS suppressed_macs")
         # Lightweight migration: topup_gb (per-device top-up persistence) was
         # added after the first release; ALTER is a no-op when it already exists.
         try:
@@ -450,6 +478,37 @@ class Database:
                 await self._conn.commit()
             except Exception:  # noqa: BLE001  (duplicate column on existing DBs)
                 pass
+        # Per-device source-interface tag (WiFi/LAN): which NIC the device was
+        # last seen on, auto-learned from the kernel neighbor table. ALTER
+        # no-ops when already present (fresh SCHEMA includes it).
+        try:
+            await self._conn.execute(
+                "ALTER TABLE devices ADD COLUMN source_interface "
+                "TEXT NOT NULL DEFAULT ''")
+            await self._conn.commit()
+        except Exception:  # noqa: BLE001  (duplicate column on existing DBs)
+            pass
+        # Router-side access label (WiFi probe auto-learn + manual override).
+        # ALTER no-ops when already present (fresh SCHEMA includes both).
+        for column in ("access_interface", "access_override"):
+            try:
+                await self._conn.execute(
+                    f"ALTER TABLE devices ADD COLUMN {column} "
+                    "TEXT NOT NULL DEFAULT ''")
+                await self._conn.commit()
+            except Exception:  # noqa: BLE001  (duplicate column on existing DBs)
+                pass
+        # Bundle period type: 'renew_day' (configured reset_day) or
+        # 'end_of_month' (calendar-month bill — resets on the 1st whatever the
+        # configured day says). ALTER no-ops when already present (fresh
+        # SCHEMA includes it).
+        try:
+            await self._conn.execute(
+                "ALTER TABLE bundle_config ADD COLUMN period_type "
+                "TEXT NOT NULL DEFAULT 'renew_day'")
+            await self._conn.commit()
+        except Exception:  # noqa: BLE001  (duplicate column on existing DBs)
+            pass
         await self._migrate_domain_rules_scope_key()
         await self._backfill_users()
         await self._seed_gateway()
@@ -626,7 +685,8 @@ class Database:
     async def update_device(self, device_id: int, **fields: Any) -> Device | None:
         allowed = {"name", "quota_mode", "fixed_gb", "block_state",
                    "user_id", "bypass", "limit_down_mbps", "limit_up_mbps",
-                   "dns_server"}
+                   "dns_server", "source_interface", "access_interface",
+                   "access_override"}
         sets, args = [], []
         for key, value in fields.items():
             if key in allowed:
@@ -641,20 +701,18 @@ class Database:
         return await self.get_device(device_id)
 
     async def delete_device(self, device_id: int,
-                            suppress_guest_mac: bool = False) -> None:
-        """Delete a device. When ``suppress_guest_mac`` is set AND the device
-        belongs to a guest user, its MAC is recorded in ``suppressed_macs`` so
-        run.py does not auto-register it again while it stays connected (the
-        manual-delete-never-returns rule). The month-reset path calls without
-        the flag — a returning guest after a reset re-registers fresh."""
+                            deny_list_mac: bool = False) -> None:
+        """Delete a device. When ``deny_list_mac`` is set, its MAC is added to
+        the deny list (permanent blacklist) FIRST, so run.py never auto-
+        registers it again while it stays connected and the kernel keeps
+        blocking it even without a device row. Removal is manual: deleting the
+        MAC from the deny list in the Network tab unblocks it. The month-reset
+        path never sets the flag — a returning guest after a reset registers
+        fresh."""
         row = await self._fetch_one(
             "SELECT mac, user_id FROM devices WHERE id=?", (device_id,))
-        if suppress_guest_mac and row is not None:
-            if row["user_id"] is not None:
-                user = await self._fetch_one(
-                    "SELECT guest FROM users WHERE id=?", (row["user_id"],))
-                if user is not None and user["guest"]:
-                    await self.add_suppressed_mac(row["mac"])
+        if deny_list_mac and row is not None:
+            await self.add_mac_list("deny", [row["mac"]])
         await self.conn.execute("DELETE FROM devices WHERE id=?", (device_id,))
         # app-layer FK cleanup: the device's DNS history dies with it (usage
         # rows are TTL-bounded by the quota period instead).
@@ -667,13 +725,6 @@ class Database:
 
     async def set_device_state(self, device_id: int, state: str) -> None:
         await self.update_device(device_id, block_state=state)
-
-    async def add_topup(self, device_id: int, extra_gb: float) -> None:
-        """Accumulate a per-device top-up (survives allowance recomputes)."""
-        await self.conn.execute(
-            "UPDATE devices SET topup_gb = topup_gb + ? WHERE id=?",
-            (extra_gb, device_id))
-        await self.conn.commit()
 
     async def clear_topups(self) -> None:
         """Reset all top-ups when a new quota period opens."""
@@ -759,22 +810,22 @@ class Database:
         return await self.get_user(user_id)
 
     async def delete_user(self, user_id: int, cascade: bool = True,
-                          suppress_guest_macs: bool = False) -> int:
+                          deny_list_macs: bool = False) -> int:
         """Delete a user (cascade removes their devices + usage rows). When
-        ``suppress_guest_macs`` is set AND the user is a guest, their device
-        MACs are recorded in ``suppressed_macs`` first, so run.py will not
-        auto-register those devices again while they stay connected. Returns
-        how many devices were removed with them."""
-        user = await self._fetch_one("SELECT guest FROM users WHERE id=?",
-                                     (user_id,))
+        ``deny_list_macs`` is set, EVERY device MAC is added to the deny list
+        (permanent blacklist) first, so run.py never auto-registers those
+        devices again while they stay connected and the kernel keeps blocking
+        them even without device rows. Removal is manual: deleting the MACs
+        from the deny list in the Network tab unblocks them. The month-reset
+        path never sets the flag. Returns how many devices were removed."""
         rows = await self.conn.execute_fetchall(
             "SELECT id, mac FROM devices WHERE user_id=?", (user_id,))
         if rows and not cascade:
             raise ValueError(
                 "user still has devices; reassign or delete them first")
         for r in rows:
-            if suppress_guest_macs and user is not None and user["guest"]:
-                await self.add_suppressed_mac(r["mac"])
+            if deny_list_macs:
+                await self.add_mac_list("deny", [r["mac"]])
             await self.conn.execute(
                 "DELETE FROM usage_daily WHERE device_id=?", (r["id"],))
             await self.conn.execute("DELETE FROM devices WHERE id=?", (r["id"],))
@@ -845,42 +896,6 @@ class Database:
             (GATEWAY_MAC, time.time(), user_id))
         await self.conn.commit()
 
-    # -- suppressed MACs ------------------------------------------------------
-    # A manually-deleted guest device's MAC is recorded here so run.py does not
-    # auto-register it again while it stays connected. The row is cleared once
-    # the MAC drops out of the dnsmasq lease file (device genuinely left), so a
-    # later return registers a fresh guest. The month-reset path NEVER writes
-    # here — returning guests after a reset re-register normally.
-
-    async def add_suppressed_mac(self, mac: str) -> None:
-        """Record a MAC that must not auto-register. Lowercased + idempotent."""
-        await self.conn.execute(
-            "INSERT INTO suppressed_macs (mac, created_at) VALUES (?, ?) "
-            "ON CONFLICT(mac) DO NOTHING",
-            (mac.lower(), time.time()))
-        await self.conn.commit()
-
-    async def is_mac_suppressed(self, mac: str) -> bool:
-        row = await self._fetch_one(
-            "SELECT 1 FROM suppressed_macs WHERE mac=?", (mac.lower(),))
-        return row is not None
-
-    async def clear_suppressed_macs_not_in(self, keep: set[str]) -> int:
-        """Drop suppression rows for MACs no longer on the network.
-
-        ``keep`` is the set of currently-leased MACs (dnsmasq lease file). A
-        MAC that left the network loses its suppression, so a future return
-        registers fresh. Returns how many rows were cleared."""
-        keep_l = {m.lower() for m in keep}
-        rows = await self.conn.execute_fetchall("SELECT mac FROM suppressed_macs")
-        gone = [r["mac"] for r in rows if r["mac"] not in keep_l]
-        if gone:
-            ph = ",".join("?" for _ in gone)
-            await self.conn.execute(
-                f"DELETE FROM suppressed_macs WHERE mac IN ({ph})", gone)
-            await self.conn.commit()
-        return len(gone)
-
     # -- MAC whitelist/blacklist --------------------------------------------
 
     async def get_mac_list(self, kind: str) -> list[str]:
@@ -888,6 +903,20 @@ class Database:
         row = await self.conn.execute_fetchall(
             "SELECT mac FROM mac_lists WHERE kind=? ORDER BY mac", (kind,))
         return [r["mac"] for r in row]
+
+    async def add_mac_list(self, kind: str, macs: list[str]) -> None:
+        """Add MACs to the allow/deny list (additive — existing entries are
+        kept). Lowercased + idempotent; used by manual deletes to permanently
+        blacklist a device's MAC."""
+        kind = kind if kind in ("allow", "deny") else "allow"
+        cleaned = sorted({m.lower().strip() for m in macs if m and m.strip()})
+        if not cleaned:
+            return
+        await self.conn.executemany(
+            "INSERT OR IGNORE INTO mac_lists (mac, kind, created_at) "
+            "VALUES (?, ?, ?)",
+            [(m, kind, time.time()) for m in cleaned])
+        await self.conn.commit()
 
     async def set_mac_list(self, kind: str, macs: list[str]) -> None:
         """Replace the whole allow/deny list. Lowercased + idempotent."""
@@ -953,11 +982,6 @@ class Database:
 
     # -- bundle config ------------------------------------------------------
 
-    async def has_bundle(self) -> bool:
-        """True if a ``bundle_config`` row exists (seeded/edited before)."""
-        row = await self._fetch_one("SELECT 1 FROM bundle_config WHERE id=1")
-        return row is not None
-
     async def get_bundle(self) -> Bundle:
         row = await self._fetch_one("SELECT * FROM bundle_config WHERE id=1")
         if row is None:
@@ -978,6 +1002,7 @@ class Database:
         return Bundle(
             total_gb=float(row["total_gb"]),
             reset_day=int(row["reset_day"]),
+            period_type=row["period_type"] or "renew_day",
             allowances=allowances,
             period_start=row["period_start"] or "",
             period_end=row["period_end"] or "",
@@ -985,12 +1010,13 @@ class Database:
 
     async def set_bundle(self, bundle: Bundle) -> None:
         await self.conn.execute(
-            """INSERT INTO bundle_config (id, total_gb, reset_day, allowances, period_start, period_end)
-               VALUES (1, ?, ?, ?, ?, ?)
+            """INSERT INTO bundle_config (id, total_gb, reset_day, period_type, allowances, period_start, period_end)
+               VALUES (1, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET total_gb=excluded.total_gb,
-                 reset_day=excluded.reset_day, allowances=excluded.allowances,
+                 reset_day=excluded.reset_day, period_type=excluded.period_type,
+                 allowances=excluded.allowances,
                  period_start=excluded.period_start, period_end=excluded.period_end""",
-            (bundle.total_gb, bundle.reset_day,
+            (bundle.total_gb, bundle.reset_day, bundle.period_type,
              json.dumps(bundle.allowances), bundle.period_start, bundle.period_end),
         )
         await self.conn.commit()
@@ -1022,20 +1048,6 @@ class Database:
         up = sum(r["up_bytes"] for r in rows)
         down = sum(r["down_bytes"] for r in rows)
         return {"up_bytes": up, "down_bytes": down, "total_bytes": up + down}
-
-    async def get_usage_series(self, device_id: int | None,
-                               since_date: str) -> list[dict[str, Any]]:
-        """Daily series for the UI chart."""
-        if device_id is None:
-            rows = await self.conn.execute_fetchall(
-                "SELECT date, SUM(up_bytes) up, SUM(down_bytes) down FROM usage_daily "
-                "WHERE date>=? GROUP BY date ORDER BY date", (since_date,))
-        else:
-            rows = await self.conn.execute_fetchall(
-                "SELECT date, up_bytes up, down_bytes down FROM usage_daily "
-                "WHERE device_id=? AND date>=? ORDER BY date",
-                (device_id, since_date))
-        return [{"date": r["date"], "up": r["up"], "down": r["down"]} for r in rows]
 
     async def get_period_usage(self) -> dict[int, dict[str, int]]:
         """Aggregate usage since period_start, keyed by device_id."""
@@ -1177,6 +1189,18 @@ class Database:
         rows = await self.conn.execute_fetchall(
             "SELECT * FROM events ORDER BY ts DESC LIMIT ?", (limit,))
         return [dict(r) for r in rows]
+
+    async def prune_events(self, before_ts: float) -> int:
+        """Delete audit rows older than ``before_ts`` (unix seconds).
+
+        The events table is append-only and otherwise UNBOUNDED — the only
+        real disk-growth risk on a gateway that runs for months. Called on the
+        maintenance tick's hourly gate. Returns the rowcount removed.
+        """
+        cur = await self.conn.execute(
+            "DELETE FROM events WHERE ts < ?", (before_ts,))
+        await self.conn.commit()
+        return cur.rowcount
 
     # -- domain rules (DNS filtering) ----------------------------------------
 
@@ -1352,6 +1376,9 @@ def _row_to_device(row: Any) -> Device:
         limit_down_mbps=float(row["limit_down_mbps"] or 0.0),
         limit_up_mbps=float(row["limit_up_mbps"] or 0.0),
         dns_server=row["dns_server"] or "",
+        source_interface=row["source_interface"] or "",
+        access_interface=row["access_interface"] or "",
+        access_override=row["access_override"] or "",
     )
 
 
