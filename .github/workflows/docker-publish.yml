@@ -2,8 +2,18 @@ name: Publish Docker Image
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
+
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Image tag to publish (optional)'
+        required: false
+        type: string
+        default: ''
 
   workflow_dispatch:
     inputs:
@@ -24,6 +34,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve application version
+        id: version
+        shell: bash
+        run: |
+          VER=$(python3 -c "import sys; sys.path.insert(0,'.'); from quota.version import __version__; print(__version__)")
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VER}" >> "$GITHUB_OUTPUT"
+          echo "Resolved QuotaManager version: ${VER}"
 
       - name: Set up QEMU (for multi-platform builds)
         uses: docker/setup-qemu-action@v3
@@ -46,10 +67,12 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=true
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.version != '' }}
+            type=raw,value=v${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.version != '' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' && inputs.tag != 'latest' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -58,5 +81,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
