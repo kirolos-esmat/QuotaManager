@@ -6,6 +6,15 @@ import asyncio
 from zoneinfo import ZoneInfo
 
 import pytest
+# import asyncio
+_cached_loop = None
+def _get_loop():
+    global _cached_loop
+    if _cached_loop is None or _cached_loop.is_closed():
+        _cached_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_cached_loop)
+    return _cached_loop
+
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -45,13 +54,13 @@ def client(tmp_path):
         await database.connect()
         return database, service
 
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(_init())
+#     import asyncio
+    _get_loop().run_until_complete(_init())
 
     app = create_app(database, service, holder)
     with TestClient(app) as c:
         yield c, database, service
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_login_and_me(client):
@@ -107,12 +116,12 @@ def test_legacy_password_hash_verified_and_rehashed(client):
     salt = secrets.token_bytes(16)
     dk = hashlib.pbkdf2_hmac("sha256", b"admin", salt, 200_000)
     legacy = f"{salt.hex()}${dk.hex()}"
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(
+#     import asyncio
+    _get_loop().run_until_complete(
         db.set_setting("admin_password", legacy))
 
     assert c.post("/api/login", json={"password": "admin"}).status_code == 200
-    stored = asyncio.get_event_loop().run_until_complete(
+    stored = _get_loop().run_until_complete(
         db.get_setting("admin_password", ""))
     parts = stored.split("$")
     assert len(parts) == 3, "legacy hash must be upgraded to the 3-part format"
@@ -238,8 +247,8 @@ def test_bundle_and_reset(client):
     b = c.get("/api/bundle").json()
     assert b["total_gb"] == 50.0 and b["reset_day"] == 15
     # dashboard owns the bundle now -> config.yaml won't override on restart
-    import asyncio
-    src = asyncio.get_event_loop().run_until_complete(
+#     import asyncio
+    src = _get_loop().run_until_complete(
         db.get_setting("bundle_source", "config"))
     assert src == "dashboard"
 
@@ -253,11 +262,11 @@ def test_topup_clears_block(client):
     # use more than allowance (bundle default 140, the protected Gateway user
     # takes 1.0 fixed off the top, so one auto device -> 139)
     # simulate usage directly in DB
-    import asyncio
+#     import asyncio
     async def _add():
         await db.add_usage(dev_id, "2026-08-01", int(150 * GB), 0)
         await service.evaluate_blocks()
-    asyncio.get_event_loop().run_until_complete(_add())
+    _get_loop().run_until_complete(_add())
 
     r = c.get("/api/dashboard")
     assert r.json()["blocked_count"] == 1
@@ -289,8 +298,8 @@ def test_dashboard_shaping_state(tmp_path):
 
     async def _init():
         await database.connect()
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(_init())
+#     import asyncio
+    _get_loop().run_until_complete(_init())
 
     app = create_app(
         database, service, SnapshotHolder(),
@@ -305,7 +314,7 @@ def test_dashboard_shaping_state(tmp_path):
             assert dash["shaping"] == {"available": True, "applied": False}
             assert any(d["id"] == dev_id for d in dash["devices"])
     finally:
-        asyncio.get_event_loop().run_until_complete(database.close())
+        _get_loop().run_until_complete(database.close())
 
 
 def test_milestone_notify_requires_owner(tmp_path):
@@ -317,8 +326,8 @@ def test_milestone_notify_requires_owner(tmp_path):
 
     async def _init():
         await database.connect()
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(_init())
+#     import asyncio
+    _get_loop().run_until_complete(_init())
 
     # A dedicated client whose source IP we control (starlette's default test
     # client reports "testclient" — the gate must see a real lease IP).
@@ -330,10 +339,10 @@ def test_milestone_notify_requires_owner(tmp_path):
                                              "name": "TV", "quota_mode": "fixed",
                                              "fixed_gb": 5})
             other_user = r.json()["user_id"]
-            import asyncio
-            gw_dev = asyncio.get_event_loop().run_until_complete(
+#             import asyncio
+            gw_dev = _get_loop().run_until_complete(
                 database.get_device(mac=GATEWAY_MAC))
-            gw_user = asyncio.get_event_loop().run_until_complete(
+            gw_user = _get_loop().run_until_complete(
                 database.get_user(gw_dev.user_id))
 
             def _notify(user_id):
@@ -349,13 +358,13 @@ def test_milestone_notify_requires_owner(tmp_path):
             async def _lease():
                 await database.set_lease("aa:bb:cc:dd:ee:02", "127.0.0.1")
                 await service.milestone_state()  # computes milestone flags on demand
-            asyncio.get_event_loop().run_until_complete(_lease())
+            _get_loop().run_until_complete(_lease())
             assert _notify(other_user).status_code == 200
             assert _notify(gw_user.id).status_code == 403
     finally:
         # a failed assertion above must still release the aiosqlite worker
         # thread, or the pytest process never exits
-        asyncio.get_event_loop().run_until_complete(database.close())
+        _get_loop().run_until_complete(database.close())
 
 
 def test_bundle_recharge_grows_total(client):
@@ -375,8 +384,8 @@ def test_bundle_recharge_grows_total(client):
     assert r.json()["total_gb"] == 190.0
     assert r.json()["added_gb"] == 50.0
     # a recharge is a dashboard action: it takes bundle ownership
-    import asyncio
-    src = asyncio.get_event_loop().run_until_complete(
+#     import asyncio
+    src = _get_loop().run_until_complete(
         db.get_setting("bundle_source", "config"))
     assert src == "dashboard"
 
@@ -629,11 +638,11 @@ def test_user_topup_via_api(client):
                                           "user_id": uid}).json()["id"]
     # use more than the user's allowance (bundle 140, one auto user -> 139;
     # the protected Gateway user takes 1.0 fixed off the top)
-    import asyncio
+#     import asyncio
     async def _add():
         await db.add_usage(dev_id, "2026-08-01", int(150 * GB), 0)
         await service.evaluate_blocks()
-    asyncio.get_event_loop().run_until_complete(_add())
+    _get_loop().run_until_complete(_add())
     assert c.get("/api/dashboard").json()["blocked_count"] == 1
 
     r = c.post(f"/api/users/{uid}/topup", json={"extra_gb": 20})
@@ -663,11 +672,11 @@ def test_device_bypass_and_quota_edit_via_api(client):
     d1 = c.post("/api/devices", json={"mac": "aa:bb:cc:dd:ee:45",
                                       "user_id": uid}).json()["id"]
     c.post("/api/devices", json={"mac": "aa:bb:cc:dd:ee:46", "user_id": uid})
-    import asyncio
+#     import asyncio
     async def _add():
         await db.add_usage(d1, "2026-08-01", int(150 * GB), 0)
         await service.evaluate_blocks()
-    asyncio.get_event_loop().run_until_complete(_add())
+    _get_loop().run_until_complete(_add())
     assert c.get("/api/dashboard").json()["blocked_count"] == 2
 
     # exempt ONE device from its user's quota block
@@ -700,8 +709,8 @@ def test_device_consumption_is_per_device(client):
     c.post("/api/devices", json={"mac": "aa:bb:cc:dd:ee:62",
                                  "name": "Laptop", "user_id": uid})
 
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(
+#     import asyncio
+    _get_loop().run_until_complete(
         db.add_usage(a, "2026-08-05", int(4 * GB), int(2 * GB)))
 
     dash = c.get("/api/dashboard").json()
@@ -799,7 +808,7 @@ def test_guest_speed_limit_round_trip(client):
 
 def test_guest_quota_updates_existing_guest(client):
     """Raising the guest quota applies to guests already registered."""
-    import asyncio
+#     import asyncio
     c, db, service = client
     _login(c)
 
@@ -808,7 +817,7 @@ def test_guest_quota_updates_existing_guest(client):
                                  fixed_gb=1.0, guest=True)
         await db.upsert_device("aa:bb:cc:dd:ee:91", name="Phone", user_id=g.id)
         await service.recompute_allowances()
-    asyncio.get_event_loop().run_until_complete(_seed())
+    _get_loop().run_until_complete(_seed())
 
     c.post("/api/guest", json={"quota_gb": 3})
     dash = c.get("/api/dashboard").json()
@@ -823,13 +832,13 @@ def test_connected_follows_arp_responders(tmp_path):
     """With the ARP probe running, a leased device is "connected" only if it
     ALSO answered the latest sweep — a lease alone lags reality by up to
     LEASE_HOURS (asleep/off/another-network devices must go grey)."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "api-arp.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
 
     responders = {"192.168.2.50"}
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(
         database, service, holder,
         active_ips_getter=lambda: set(responders))
@@ -846,7 +855,7 @@ def test_connected_follows_arp_responders(tmp_path):
                 await database.upsert_device(
                     "aa:bb:cc:dd:ee:95", name="Tablet", user_id=g.id)
                 await database.set_lease("aa:bb:cc:dd:ee:95", "192.168.2.51")
-            asyncio.get_event_loop().run_until_complete(_seed())
+            _get_loop().run_until_complete(_seed())
 
             dash = c.get("/api/dashboard").json()
             by_mac = {d["mac"]: d for d in dash["devices"]}
@@ -860,7 +869,7 @@ def test_connected_follows_arp_responders(tmp_path):
             by_mac2 = {d["mac"]: d for d in dash2["devices"]}
             assert by_mac2["aa:bb:cc:dd:ee:94"]["connected"] is False
     finally:
-        asyncio.get_event_loop().run_until_complete(database.close())
+        _get_loop().run_until_complete(database.close())
 
 
 def test_disabled_user_surfaces_in_dashboard(client):
@@ -869,12 +878,12 @@ def test_disabled_user_surfaces_in_dashboard(client):
     need a shared/fixed assignment."""
     c, db, _ = client
     _login(c)
-    import asyncio
+#     import asyncio
     async def _seed():
         u = await db.create_user("New", _db.QUOTA_DISABLED, 0.0)
         await db.upsert_device("aa:bb:cc:dd:ee:99", name="New Phone",
                                user_id=u.id)
-    asyncio.get_event_loop().run_until_complete(_seed())
+    _get_loop().run_until_complete(_seed())
 
     dash = c.get("/api/dashboard").json()
     user = next(u for u in dash["users"] if u["name"] == "New")
@@ -895,7 +904,7 @@ def test_disabled_user_surfaces_in_dashboard(client):
 
 def test_guest_and_connected_flags_in_views(client):
     """Device rows report guest + connected; users report the guest flag."""
-    import asyncio
+#     import asyncio
     c, db, _ = client
     _login(c)
     async def _seed():
@@ -906,7 +915,7 @@ def test_guest_and_connected_flags_in_views(client):
         await db.set_lease("aa:bb:cc:dd:ee:92", "192.168.2.50")
         await db.upsert_device("aa:bb:cc:dd:ee:93", name="Old Tablet",
                                user_id=g.id)   # no lease => offline
-    asyncio.get_event_loop().run_until_complete(_seed())
+    _get_loop().run_until_complete(_seed())
 
     dash = c.get("/api/dashboard").json()
     by_mac = {d["mac"]: d for d in dash["devices"]}
@@ -919,7 +928,7 @@ def test_guest_and_connected_flags_in_views(client):
 
 def test_reset_month_deletes_guests(client):
     """A manual reset wipes guest users but keeps normal users."""
-    import asyncio
+#     import asyncio
     c, db, service = client
     _login(c)
     async def _seed():
@@ -929,7 +938,7 @@ def test_reset_month_deletes_guests(client):
         n = await db.create_user(name="Dad", quota_mode=_db.QUOTA_FIXED,
                                  fixed_gb=20.0)
         await db.upsert_device("aa:bb:cc:dd:ee:95", name="Phone", user_id=n.id)
-    asyncio.get_event_loop().run_until_complete(_seed())
+    _get_loop().run_until_complete(_seed())
 
     # guest + Dad + the always-seeded protected Gateway user
     assert c.get("/api/dashboard").json()["total_users"] == 3
@@ -975,11 +984,11 @@ def test_dashboard_surfaces_wan_status(tmp_path):
     payload — the single _dashboard_payload source keeps them in step. The saved
     PPPoE creds ride only on ``GET /api/wan`` (the panel prefill), never in the
     WS-pushed ``wan`` key."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     holder.swap(EngineSnapshot(wan_status={
         "topology": "lan", "configured": "lan", "source": "config", "pending": None,
         "ppp0": "n/a", "ppp_ip": "", "ppp_peer": "",
@@ -995,18 +1004,18 @@ def test_dashboard_surfaces_wan_status(tmp_path):
             "pppoe_has_password": False, "wan_if": "",
         }
         assert c.get("/api/dashboard").json()["wan"] == expected
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_dashboard_top_level_internet(tmp_path):
     """The dashboard payload carries the internet probe as a TOP-LEVEL key (the
     top-bar pill reads it directly), mirroring wan_status: true / false / None
     (not probed yet = the pre-first-tick 'Checking…' state)."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     base = {"topology": "lan", "configured": "lan", "source": "config",
             "pending": None, "ppp0": "n/a", "ppp_ip": "", "ppp_peer": ""}
     app = create_app(database, service, holder)
@@ -1025,7 +1034,7 @@ def test_dashboard_top_level_internet(tmp_path):
         data = c.get("/api/dashboard").json()
         assert data["internet"] is None
         assert "internet" not in data["wan"]
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_wan_toggle_persists_and_owns_topology(client):
@@ -1046,10 +1055,10 @@ def test_wan_toggle_persists_and_owns_topology(client):
         return (await database.get_setting("topology_source", None),
                 await database.get_setting("topology", None))
 
-    import asyncio
-    source, topo = asyncio.get_event_loop().run_until_complete(_read())
+#     import asyncio
+    source, topo = _get_loop().run_until_complete(_read())
     assert (source, topo) == ("dashboard", "wan")
-    events = asyncio.get_event_loop().run_until_complete(database.list_events())
+    events = _get_loop().run_until_complete(database.list_events())
     assert any("WAN topology set to wan" in e["message"] for e in events)
 
 
@@ -1057,11 +1066,11 @@ def test_wan_persist_no_manager_preserves_saved_creds(tmp_path):
     """REGRESSION: in the no-manager path (tests / degraded boot), a
     body with empty creds — a Revert-to-LAN posts only ``{topology: "lan"}`` —
     must not erase the credentials previously saved for the panel prefill."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan-persist.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder, topology_manager=None)
     with TestClient(app) as c:
         _login_wan(c)
@@ -1076,7 +1085,7 @@ def test_wan_persist_no_manager_preserves_saved_creds(tmp_path):
         # the stored secret is NEVER shipped — masked + a presence flag instead
         assert c.get("/api/wan").json()["pppoe_password"] == "********"
         assert c.get("/api/wan").json()["pppoe_has_password"] is True
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_wan_toggle_invalid_is_400(client):
@@ -1091,8 +1100,8 @@ def test_wan_toggle_invalid_is_400(client):
     async def _source():
         return await database.get_setting("topology_source", "config")
 
-    import asyncio
-    assert asyncio.get_event_loop().run_until_complete(_source()) == "config"
+#     import asyncio
+    assert _get_loop().run_until_complete(_source()) == "config"
 
 
 def test_wan_toggle_requires_session(client):
@@ -1131,7 +1140,7 @@ def test_wan_apply_live_with_manager(tmp_path):
     """v19: with a topology manager wired, POST /api/wan APPLIES the topology
     live — PPPoE creds + WAN NIC forwarded, the DB override written in the same
     apply, restart scheduled, and the applier's tail surfaced in the response."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan-app.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
@@ -1140,7 +1149,7 @@ def test_wan_apply_live_with_manager(tmp_path):
         "ppp0": "n/a", "ppp_ip": "", "ppp_peer": "",
     }))
     manager = _FakeManager()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder, topology_manager=manager)
     with TestClient(app) as c:
         _login_wan(c)
@@ -1157,14 +1166,14 @@ def test_wan_apply_live_with_manager(tmp_path):
     # The DB override is written INSIDE TopologyManager.apply (invariant 1:
     # config.yaml + DB together) — covered by the netmgr round-trip test. The
     # endpoint only forwards creds and surfaces the manager's result.
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_wan_apply_failure_is_500(tmp_path):
     """v19: an applier failure raises RuntimeError -> HTTP 500 with the cause.
     The preference is still persisted (config + DB agree on wan) — matching
     what a manual setup re-run would have produced — but no restart fires."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan-fail.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
@@ -1174,7 +1183,7 @@ def test_wan_apply_failure_is_500(tmp_path):
     }))
     manager = _FakeManager()
     manager.fail = True
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder, topology_manager=manager)
     with TestClient(app) as c:
         _login_wan(c)
@@ -1182,14 +1191,14 @@ def test_wan_apply_failure_is_500(tmp_path):
         assert r.status_code == 500
         assert "topology apply failed" in r.json()["detail"]
         assert "boom" in r.json()["detail"]
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_wan_test_pppoe(tmp_path):
     """v19.1: POST /api/wan/test dials a throwaway link with the entered creds
     and returns the parsed result — nothing is applied (no topology change, no
     restart). The endpoint forwards the NIC too."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan-test.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
@@ -1198,7 +1207,7 @@ def test_wan_test_pppoe(tmp_path):
         "ppp0": "n/a", "ppp_ip": "", "ppp_peer": "",
     }))
     manager = _FakeManager()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder, topology_manager=manager)
     with TestClient(app) as c:
         c.post("/api/login", json={"password": "admin"})
@@ -1211,27 +1220,27 @@ def test_wan_test_pppoe(tmp_path):
         assert data["ok"] is True
         assert data["internet"] is True
     assert manager.tests == [("u@isp", "s3cret", "eth1")]
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_wan_test_pppoe_requires_manager(tmp_path):
     """No topology manager wired (degraded boot) -> 503, not a crash."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan-test-no-mgr.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder, topology_manager=None)
     with TestClient(app) as c:
         c.post("/api/login", json={"password": "admin"})
         r = c.post("/api/wan/test", json={"pppoe_user": "u@isp"})
         assert r.status_code == 503
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_wan_test_pppoe_failure_is_500(tmp_path):
     """v19.1: a failing test run (e.g. pppd missing) -> HTTP 500 with the cause."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan-test-fail.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
@@ -1241,7 +1250,7 @@ def test_wan_test_pppoe_failure_is_500(tmp_path):
     }))
     manager = _FakeManager()
     manager.fail = True
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder, topology_manager=manager)
     with TestClient(app) as c:
         c.post("/api/login", json={"password": "admin"})
@@ -1249,14 +1258,14 @@ def test_wan_test_pppoe_failure_is_500(tmp_path):
         assert r.status_code == 500
         assert "PPPoE test failed" in r.json()["detail"]
         assert "boom" in r.json()["detail"]
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_wan_renew_restarts_pppoe(tmp_path):
     """v24: POST /api/wan/renew invokes the wired renew callback (the gateway's
     _renew_wan_ip) and returns its restart result. Only allowed while WAN mode
     is active AND ppp0 is up."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan-renew.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
@@ -1270,7 +1279,7 @@ def test_wan_renew_restarts_pppoe(tmp_path):
         calls.append(True)
         return {"restarted": True, "state": "active", "detail": "dialed"}
 
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder, wan_renew=_renew)
     with TestClient(app) as c:
         c.post("/api/login", json={"password": "admin"})
@@ -1279,13 +1288,13 @@ def test_wan_renew_restarts_pppoe(tmp_path):
         assert r.json() == {"restarted": True, "state": "active",
                             "detail": "dialed"}
     assert calls == [True]
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_wan_renew_requires_wan_and_ppp0_up(tmp_path):
     """v24: a renewal is refused while ppp0 is down (nothing to renew into) or
     WAN mode isn't active (no PPPoE line) — 409, and the callback never runs."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan-renew-gate.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
@@ -1295,7 +1304,7 @@ def test_wan_renew_requires_wan_and_ppp0_up(tmp_path):
         calls.append(True)
         return {"restarted": True, "state": "active", "detail": ""}
 
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder, wan_renew=_renew)
 
     def _wan(**overrides):
@@ -1320,12 +1329,12 @@ def test_wan_renew_requires_wan_and_ppp0_up(tmp_path):
         r = c.post("/api/wan/renew")
         assert r.status_code == 409
     assert calls == [], "the callback must never run when the gates refuse"
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_wan_renew_requires_callback(tmp_path):
     """No renew callback wired (degraded boot / tests without a gateway) -> 503."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan-renew-no-cb.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
@@ -1333,19 +1342,19 @@ def test_wan_renew_requires_callback(tmp_path):
         "topology": "wan", "configured": "wan", "source": "dashboard",
         "pending": "wan", "ppp0": "up", "ppp_ip": "1.2.3.4", "ppp_peer": "",
     }))
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder)  # wan_renew=None
     with TestClient(app) as c:
         c.post("/api/login", json={"password": "admin"})
         r = c.post("/api/wan/renew")
         assert r.status_code == 503
         assert "degraded boot" in r.json()["detail"]
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_wan_renew_failure_is_500(tmp_path):
     """A callback that raises (e.g. systemctl missing) -> HTTP 500 with the cause."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan-renew-fail.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
@@ -1357,7 +1366,7 @@ def test_wan_renew_failure_is_500(tmp_path):
     async def _renew():
         raise RuntimeError("systemctl not found")
 
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder, wan_renew=_renew)
     with TestClient(app) as c:
         c.post("/api/login", json={"password": "admin"})
@@ -1365,32 +1374,32 @@ def test_wan_renew_failure_is_500(tmp_path):
         assert r.status_code == 500
         assert "WAN renew failed" in r.json()["detail"]
         assert "systemctl not found" in r.json()["detail"]
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_wan_renew_requires_auth(tmp_path):
     """The renew endpoints sit behind the same session gate as the rest of /api."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan-renew-auth.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder, wan_renew=lambda: {})
     with TestClient(app) as c:
         assert c.post("/api/wan/renew").status_code == 401
         assert c.post("/api/wan/renew-config",
                       json={"enabled": True, "minutes": 15}).status_code == 401
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_wan_renew_config_round_trip(tmp_path):
     """v24: POST /api/wan/renew-config persists the auto-renew schedule with the
     minutes clamped to the 5-minute floor and returns the stored config."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan-renew-cfg.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder)
     with TestClient(app) as c:
         c.post("/api/login", json={"password": "admin"})
@@ -1405,20 +1414,20 @@ def test_wan_renew_config_round_trip(tmp_path):
         async def _read():
             return (await database.get_setting("wan_ip_renew_enabled", None),
                     await database.get_setting("wan_ip_renew_minutes", None))
-        enabled, minutes = asyncio.get_event_loop().run_until_complete(_read())
+        enabled, minutes = _get_loop().run_until_complete(_read())
         assert (enabled, minutes) == ("0", "30")
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_dashboard_surfaces_renew_schedule(tmp_path):
     """The renew schedule rides the wan_status snapshot into both /api/wan and
     the dashboard payload, so the WAN tab shows the toggle + last-renewed line
     without a separate query."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "wan-renew-keys.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     base = {"topology": "wan", "configured": "wan", "source": "dashboard",
             "pending": "wan", "ppp0": "up", "ppp_ip": "1.2.3.4", "ppp_peer": "",
             "renew_enabled": True, "renew_minutes": 20,
@@ -1435,17 +1444,17 @@ def test_dashboard_surfaces_renew_schedule(tmp_path):
         assert wan["renew_enabled"] is True
         assert wan["renew_minutes"] == 20
         assert wan["renew_last"] == "2026-08-15T00:00:00+00:00"
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_dashboard_surfaces_rogue_snapshot(tmp_path):
     """A populated snapshot's rogues reach both /api/rogue and the dashboard
     payload — the single _dashboard_payload source keeps them in step."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "rogue.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     holder.swap(EngineSnapshot(
         rogue=[RogueHost(ip="192.168.2.250", mac="11:22:33:44:55:66",
                          vendor="TestCo", online=True)]))
@@ -1456,7 +1465,7 @@ def test_dashboard_surfaces_rogue_snapshot(tmp_path):
                      "vendor": "TestCo", "online": True}]
         assert c.get("/api/rogue").json() == expected
         assert c.get("/api/dashboard").json()["rogue"] == expected
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_logs_endpoint_empty_without_file(client):
@@ -1472,7 +1481,7 @@ def test_logs_endpoint_empty_without_file(client):
 
 def test_logs_endpoint_tails_file(tmp_path):
     """/api/logs reads the gateway log file newest-first, honoring ?limit=."""
-    import asyncio
+#     import asyncio
     logf = tmp_path / "quota.log"
     logf.write_text(
         "2026-08-05 10:00:00,000 INFO quota.api: one\n"
@@ -1482,7 +1491,7 @@ def test_logs_endpoint_tails_file(tmp_path):
     database = _db.Database(tmp_path / "logapi.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder, log_path=logf)
     with TestClient(app) as c:
         c.post("/api/login", json={"password": "admin"})
@@ -1492,7 +1501,7 @@ def test_logs_endpoint_tails_file(tmp_path):
         assert "ERROR" in full["lines"][0]
         tail = c.get("/api/logs?limit=2").json()
         assert len(tail["lines"]) == 2 and tail["truncated"] is True
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 # ---------------------------------------------------------------------------
@@ -1555,12 +1564,12 @@ def test_gateway_payload_engine_programmed_but_ui_free(tmp_path):
     even though the Gateway user card reads unblocked — the reconciliation
     (desired False vs programmed True) is the reverse of the stale-engine
     case and is surfaced the same way."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "gw.db")
     holder = SnapshotHolder()
     holder.swap(EngineSnapshot(gateway_blocked=True, engine_available=True))
     service = QuotaService(database, timezone="Africa/Cairo")
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder)
     try:
         with TestClient(app) as c:
@@ -1570,7 +1579,7 @@ def test_gateway_payload_engine_programmed_but_ui_free(tmp_path):
             assert dash["gateway"]["blocked_programmed"] is True
             assert dash["gateway"]["engine_available"] is True
     finally:
-        asyncio.get_event_loop().run_until_complete(database.close())
+        _get_loop().run_until_complete(database.close())
 
 
 def test_gateway_device_cannot_be_recreated_or_reassigned(client):
@@ -1593,34 +1602,34 @@ def test_delete_device_blacklists_mac(client):
     """A manual DELETE of a device blacklists its MAC (permanent deny list):
     run.py never auto-registers it again while it stays connected, and the
     Network-tab blacklist is the only way back in."""
-    import asyncio
+#     import asyncio
     c, db, _ = client
     _login(c)
-    g = asyncio.get_event_loop().run_until_complete(db.create_user(
+    g = _get_loop().run_until_complete(db.create_user(
         name="", quota_mode=_db.QUOTA_FIXED, fixed_gb=1.0, guest=True))
-    dev = asyncio.get_event_loop().run_until_complete(db.upsert_device(
+    dev = _get_loop().run_until_complete(db.upsert_device(
         "aa:bb:cc:dd:ee:99", name="Phone", user_id=g.id))
-    assert asyncio.get_event_loop().run_until_complete(
+    assert _get_loop().run_until_complete(
         db.get_mac_list("deny")) == []
 
     r = c.delete(f"/api/devices/{dev.id}")
     assert r.status_code == 200, r.text
-    assert asyncio.get_event_loop().run_until_complete(
+    assert _get_loop().run_until_complete(
         db.get_mac_list("deny")) == ["aa:bb:cc:dd:ee:99"]
 
 
 def test_delete_user_blacklists_its_macs(client):
     """Deleting a USER blacklists every device MAC it owned."""
-    import asyncio
+#     import asyncio
     c, db, _ = client
     _login(c)
-    g = asyncio.get_event_loop().run_until_complete(db.create_user(
+    g = _get_loop().run_until_complete(db.create_user(
         name="", quota_mode=_db.QUOTA_FIXED, fixed_gb=1.0, guest=True))
-    asyncio.get_event_loop().run_until_complete(db.upsert_device(
+    _get_loop().run_until_complete(db.upsert_device(
         "aa:bb:cc:dd:ee:98", user_id=g.id))
     r = c.delete(f"/api/users/{g.id}")
     assert r.status_code == 200, r.text
-    assert asyncio.get_event_loop().run_until_complete(
+    assert _get_loop().run_until_complete(
         db.get_mac_list("deny")) == ["aa:bb:cc:dd:ee:98"]
 
 
@@ -1628,19 +1637,19 @@ def test_delete_normal_user_blacklists_its_macs(client):
     """A NORMAL user's devices are blacklisted too (no guest-only carve-out):
     deleting the user removes the cards AND the kernel keeps blocking the
     still-connected devices."""
-    import asyncio
+#     import asyncio
     c, db, _ = client
     _login(c)
-    u = asyncio.get_event_loop().run_until_complete(db.create_user(
+    u = _get_loop().run_until_complete(db.create_user(
         name="Dad", quota_mode=_db.QUOTA_FIXED, fixed_gb=20.0))
-    asyncio.get_event_loop().run_until_complete(db.upsert_device(
+    _get_loop().run_until_complete(db.upsert_device(
         "aa:bb:cc:dd:ee:97", name="Phone", user_id=u.id))
     r = c.delete(f"/api/users/{u.id}")
     assert r.status_code == 200, r.text
-    assert asyncio.get_event_loop().run_until_complete(
+    assert _get_loop().run_until_complete(
         db.get_mac_list("deny")) == ["aa:bb:cc:dd:ee:97"]
     # the device row is gone but the MAC stays blacklisted
-    assert asyncio.get_event_loop().run_until_complete(
+    assert _get_loop().run_until_complete(
         db.get_device(mac="aa:bb:cc:dd:ee:97")) is None
     # a deleted user's MAC is hidden from the dashboard and the report
     dash = c.get("/api/dashboard").json()
@@ -1664,33 +1673,33 @@ def test_delete_normal_user_blacklists_its_macs(client):
 def test_unblacklist_restores_device(client):
     """Removing a MAC from the deny list (Network tab) unblocks it: the device
     card reappears in the dashboard."""
-    import asyncio
+#     import asyncio
     c, db, _ = client
     _login(c)
-    u = asyncio.get_event_loop().run_until_complete(db.create_user(
+    u = _get_loop().run_until_complete(db.create_user(
         name="Dad", quota_mode=_db.QUOTA_FIXED, fixed_gb=20.0))
-    asyncio.get_event_loop().run_until_complete(db.upsert_device(
+    _get_loop().run_until_complete(db.upsert_device(
         "aa:bb:cc:dd:ee:96", name="Phone", user_id=u.id))
     assert c.delete(f"/api/users/{u.id}").status_code == 200
-    assert asyncio.get_event_loop().run_until_complete(
+    assert _get_loop().run_until_complete(
         db.get_mac_list("deny")) == ["aa:bb:cc:dd:ee:96"]
 
     # un-blacklist via POST /api/mac-lists (an empty deny list)
     r = c.post("/api/mac-lists", json={"deny": []})
     assert r.status_code == 200, r.text
-    assert asyncio.get_event_loop().run_until_complete(
+    assert _get_loop().run_until_complete(
         db.get_mac_list("deny")) == []
 
 
 def test_blacklisted_device_visible_in_mac_lists_api(client):
     """A deleted device's MAC surfaces in GET /api/mac-lists (the Network-tab
     blacklist), which is the ONLY place it appears."""
-    import asyncio
+#     import asyncio
     c, db, _ = client
     _login(c)
-    u = asyncio.get_event_loop().run_until_complete(db.create_user(
+    u = _get_loop().run_until_complete(db.create_user(
         name="Dad", quota_mode=_db.QUOTA_FIXED, fixed_gb=20.0))
-    asyncio.get_event_loop().run_until_complete(db.upsert_device(
+    _get_loop().run_until_complete(db.upsert_device(
         "aa:bb:cc:dd:ee:95", name="Phone", user_id=u.id))
     assert c.delete(f"/api/users/{u.id}").status_code == 200
     lists = c.get("/api/mac-lists").json()
@@ -1702,12 +1711,12 @@ def test_speed_cap_edit_triggers_immediate_shaping_sync(tmp_path):
     shaper re-sync — the tc tree changes in the kernel right away instead of
     waiting up to 15 s for the next maintenance tick (the "needs a page
     refresh" lag)."""
-    import asyncio
+#     import asyncio
     import time
     database = _db.Database(tmp_path / "api.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
 
     fired = []
 
@@ -1747,7 +1756,7 @@ def test_speed_cap_edit_triggers_immediate_shaping_sync(tmp_path):
             time.sleep(0.01)
         assert len(fired) >= 6, fired
 
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 
@@ -1783,12 +1792,12 @@ def _seed_milestone_user(d, svc, name, allowance_gb, used_gb, ip):
 def test_milestone_api_public_from_leased_device(tmp_path):
     """GET /api/milestone needs no session: the device's source IP resolves to
     its user and the payload carries the per-device breakdown."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "ms.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
-    asyncio.get_event_loop().run_until_complete(
+    _get_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(
         _seed_milestone_user(database, service, "Mom", 40.0, 20.8,
                              "192.168.2.55")())
     app = create_app(database, service, holder)
@@ -1809,34 +1818,34 @@ def test_milestone_api_public_from_leased_device(tmp_path):
         dv = data["devices"][0]
         assert dv["name"] == "Phone"
         assert dv["device_used_gb"] > 20 and dv["device_used_gb"] < 21
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_milestone_api_unrecognized_ip(tmp_path):
     """A device with no lease gets a friendly 'unrecognized' payload, not an
     error."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "ms.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder)
     with _client_from(app, "192.168.2.99") as c:
         data = c.get("/api/milestone").json()
         assert data["recognized"] is False
         assert data["user"] is None
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_milestone_notify_marks_once(tmp_path):
     """POST /api/milestone/notify (no session) acknowledges a pending milestone;
     a re-read shows it notified + no longer pending."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "ms.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
-    user, _ = asyncio.get_event_loop().run_until_complete(
+    _get_loop().run_until_complete(database.connect())
+    user, _ = _get_loop().run_until_complete(
         _seed_milestone_user(database, service, "Mom", 40.0, 20.8,
                              "192.168.2.55")())
     app = create_app(database, service, holder)
@@ -1847,7 +1856,7 @@ def test_milestone_notify_marks_once(tmp_path):
         data = c.get("/api/milestone").json()
         assert data["user"]["milestones"]["50"]["notified"] is True
         assert data["user"]["milestones"]["50"]["pending"] is False
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_vpn_share_toggle_via_network(client):
@@ -1904,17 +1913,17 @@ def test_user_exempt_from_quota(client):
     their allowance (the dashboard resolves through user_quota_blocked and
     carries the flag); clearing the flag re-arms the quota gate; the /report
     payload carries the flag too."""
-    import asyncio
+#     import asyncio
     from datetime import datetime as _dt
     from datetime import timezone as _tz
     c, db, _ = client
     _login(c)
     # open a period so usage registers against real allowances
-    asyncio.get_event_loop().run_until_complete(
+    _get_loop().run_until_complete(
         db.set_bundle(_db.Bundle(total_gb=100.0, reset_day=1)))
     svc = QuotaService(db, timezone="Africa/Cairo")
-    asyncio.get_event_loop().run_until_complete(svc.open_period())
-    asyncio.get_event_loop().run_until_complete(svc.recompute_allowances())
+    _get_loop().run_until_complete(svc.open_period())
+    _get_loop().run_until_complete(svc.recompute_allowances())
 
     uid = c.post("/api/users", json={"name": "Unlimited",
                                      "quota_mode": "fixed",
@@ -1932,13 +1941,13 @@ def test_user_exempt_from_quota(client):
 
     # give each a device + 6 GB of usage against a 5 GB allowance
     today = _dt.now(_tz.utc).date().isoformat()
-    dev1 = asyncio.get_event_loop().run_until_complete(
+    dev1 = _get_loop().run_until_complete(
         db.upsert_device("02:00:00:00:00:01", name="Laptop", user_id=uid))
-    dev2 = asyncio.get_event_loop().run_until_complete(
+    dev2 = _get_loop().run_until_complete(
         db.upsert_device("02:00:00:00:00:02", name="Phone", user_id=uid2))
-    asyncio.get_event_loop().run_until_complete(
+    _get_loop().run_until_complete(
         db.add_usage(dev1.id, today, int(6.0 * GB), 0))
-    asyncio.get_event_loop().run_until_complete(
+    _get_loop().run_until_complete(
         db.add_usage(dev2.id, today, int(6.0 * GB), 0))
 
     # exempt survives the over-usage; the normal user is quota-blocked
@@ -1964,11 +1973,11 @@ def test_user_exempt_from_quota(client):
 
 def test_milestone_page_is_public(tmp_path):
     """GET /milestone serves the HTML page with no session cookie."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "ms.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder)
     with _client_from(app, "192.168.2.55") as c:
         r = c.get("/milestone")
@@ -1979,18 +1988,18 @@ def test_milestone_page_is_public(tmp_path):
         # actually reaches this page (browser-cached ?v=41 would show the
         # pre-obsidian sheet).
         assert "assets/styles.css?v=49" in r.text
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 
 def test_report_gated_by_source_ip(tmp_path):
     """/api/report: client-subnet IP -> 200, outside IP -> 403, explicit
     allow-list entry -> 200."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "rep.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder,
                      report_config=ReportConfig(
                          enabled=True, allow_client_subnet=True,
@@ -2012,16 +2021,16 @@ def test_report_gated_by_source_ip(tmp_path):
     # anything else is denied
     with _client_from(app, "8.8.8.8") as c:
         assert c.get("/api/report").status_code == 403
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_report_page_respects_gate(tmp_path):
     """GET /report HTML page: allowed source -> 200 text/html, outside -> 403."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "rep.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder,
                      report_config=ReportConfig(
                          enabled=True, allow_client_subnet=True,
@@ -2034,16 +2043,16 @@ def test_report_page_respects_gate(tmp_path):
         assert "assets/styles.css?v=49" in r.text
     with _client_from(app, "8.8.8.8") as c:
         assert c.get("/report").status_code == 403
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 def test_report_disabled_denies_everyone(tmp_path):
     """report.enabled=false -> /api/report 403 for every source."""
-    import asyncio
+#     import asyncio
     database = _db.Database(tmp_path / "rep.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder,
                      report_config=ReportConfig(
                          enabled=False, allow_client_subnet=True,
@@ -2052,7 +2061,7 @@ def test_report_disabled_denies_everyone(tmp_path):
     for ip in ("192.168.2.77", "192.168.1.10"):
         with _client_from(app, ip) as c:
             assert c.get("/api/report").status_code == 403
-    asyncio.get_event_loop().run_until_complete(database.close())
+    _get_loop().run_until_complete(database.close())
 
 
 # ---------------------------------------------------------------------------
@@ -2090,7 +2099,7 @@ def _seed_history_device(d, svc, name, ip):
             name="Phone", user_id=u.id)
         await d.set_lease(dev.mac, ip)
         return dev.id
-    return asyncio.get_event_loop().run_until_complete(_inner())
+    return _get_loop().run_until_complete(_inner())
 
 
 def test_history_endpoint_requires_auth(client):
@@ -2103,7 +2112,7 @@ def test_history_returns_top_domains_and_activity(client):
     _login(c)
     dev_id = _seed_history_device(database, service, "hist-dev", "192.168.2.77")
     now_minute = _now_str()
-    run = asyncio.get_event_loop().run_until_complete
+    run = _get_loop().run_until_complete
     run(database.batch_add_dns_history([
         (dev_id, now_minute, "example.com", 4),
         (dev_id, now_minute, "other.net", 2),
@@ -2135,7 +2144,7 @@ def test_history_window_and_limit_params(client):
     dev_id = _seed_history_device(database, service, "hist-win", "192.168.2.78")
     now_minute = _now_str()
     old_bucket = _hours_ago(now_minute, 2)  # outside a 1 h look-back
-    run = asyncio.get_event_loop().run_until_complete
+    run = _get_loop().run_until_complete
     run(database.batch_add_dns_history([
         (dev_id, old_bucket, "a.com", 1),
         (dev_id, old_bucket, "b.com", 1),
@@ -2163,7 +2172,7 @@ def test_history_all_devices_aggregates(client):
     dev1 = _seed_history_device(database, service, "hist-all-a", "192.168.2.80")
     dev2 = _seed_history_device(database, service, "hist-all-b", "192.168.2.81")
     now_minute = _now_str()
-    run = asyncio.get_event_loop().run_until_complete
+    run = _get_loop().run_until_complete
     run(database.batch_add_dns_history([
         (dev1, now_minute, "example.com", 4),
         (dev1, _prev_minute(now_minute), "example.com", 2),
@@ -2195,7 +2204,7 @@ def test_history_device_0_is_all(client):
     _login(c)
     dev_id = _seed_history_device(database, service, "hist-zero", "192.168.2.82")
     now_minute = _now_str()
-    run = asyncio.get_event_loop().run_until_complete
+    run = _get_loop().run_until_complete
     run(database.batch_add_dns_history([
         (dev_id, now_minute, "example.com", 3),
     ]))
@@ -2236,7 +2245,7 @@ def test_updates_round_trip(tmp_path):
     database = _db.Database(tmp_path / "upd.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
-    asyncio.get_event_loop().run_until_complete(database.connect())
+    _get_loop().run_until_complete(database.connect())
 
     installed = []
     up = Updater(
@@ -2289,4 +2298,4 @@ def test_updates_round_trip(tmp_path):
             assert st["available"] is False  # latest cleared after install
             assert st["last_install"]
     finally:
-        asyncio.get_event_loop().run_until_complete(database.close())
+        _get_loop().run_until_complete(database.close())

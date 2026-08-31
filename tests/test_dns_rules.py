@@ -1,3 +1,13 @@
+from __future__ import annotations
+
+import asyncio
+_cached_loop = None
+def _get_loop():
+    global _cached_loop
+    if _cached_loop is None or _cached_loop.is_closed():
+        _cached_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_cached_loop)
+    return _cached_loop
 """Tests for quota/dns_rules.py: hosts/AdBlock-Plus parsing, wildcard
 normalization, and the dnsmasq tag/rule renderer + file-writing manager.
 
@@ -8,7 +18,6 @@ never shell out to `dnsmasq`/`systemctl` (mirrors how test_shaping.py avoids
 touching the real `tc` binary).
 """
 
-from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -225,13 +234,13 @@ def test_social_media_preset_lists_cyb3rko_sources():
 # DB-layer CRUD (quota/db.py's domain_rules / dns_presets / dns_server cols)
 # ---------------------------------------------------------------------------
 
-import asyncio  # noqa: E402  (grouped with the DB-test section, not the top)
+# import asyncio  # noqa: E402  (grouped with the DB-test section, not the top)
 
 from quota import db as _db  # noqa: E402
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return _get_loop().run_until_complete(coro)
 
 
 def test_domain_rule_crud_roundtrip(tmp_path: Path):
