@@ -9,6 +9,11 @@ on:
 
   workflow_call:
     inputs:
+      ref:
+        description: 'Git ref to checkout (default: main)'
+        required: false
+        type: string
+        default: 'main'
       tag:
         description: 'Image tag to publish (optional)'
         required: false
@@ -17,6 +22,11 @@ on:
 
   workflow_dispatch:
     inputs:
+      ref:
+        description: 'Git ref to checkout (default: main)'
+        required: false
+        type: string
+        default: 'main'
       tag:
         description: 'Image tag to publish (default: manual-build)'
         required: false
@@ -35,6 +45,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || (github.event_name == 'push' && github.ref) || 'main' }}
           fetch-depth: 0
 
       - name: Resolve application version
