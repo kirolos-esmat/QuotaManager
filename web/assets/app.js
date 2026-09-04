@@ -5,16 +5,6 @@
 
 "use strict";
 
-/* ---------------- security override ---------------- */
-// Globally sanitize all innerHTML assignments to prevent XSS.
-// This allows legacy code to keep using .innerHTML safely.
-const originalSetHTML = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML').set;
-Object.defineProperty(Element.prototype, 'innerHTML', {
-  set(value) {
-    originalSetHTML.call(this, DOMPurify.sanitize(value, { USE_PROFILES: { html: true, svg: true } }));
-  }
-});
-
 /* ---------------- helpers ---------------- */
 
 const $ = (id) => document.getElementById(id);
@@ -1319,9 +1309,10 @@ async function refreshDns() {
   populateDnsTargetSelect($("dns-import-target"), $("dns-import-scope"));
 }
 
-async function togglePreset(presetId, enable) {
-  const err = $("dns-rule-error");
-  err.classList.add("hidden");
+async function togglePreset(presetId, enable, inputEl) {
+  const err = $("dns-presets-error") || $("dns-rule-error");
+  if (err) err.classList.add("hidden");
+  if (inputEl) inputEl.disabled = true;
   try {
     if (enable) {
       await API.post(`/api/dns/presets/${presetId}/enable`, { scope: "global" });
@@ -1329,8 +1320,12 @@ async function togglePreset(presetId, enable) {
       await API.post(`/api/dns/presets/${presetId}/disable`, { scope: "global" });
     }
   } catch (e) {
-    err.textContent = "Preset update failed: " + e.message;
-    err.classList.remove("hidden");
+    if (err) {
+      err.textContent = "Preset update failed: " + e.message;
+      err.classList.remove("hidden");
+    }
+  } finally {
+    if (inputEl) inputEl.disabled = false;
   }
   await refreshDns();
 }
@@ -2909,7 +2904,7 @@ async function init() {
     $("dns-rule-target-ip").classList.toggle("hidden", $("dns-rule-action").value !== "redirect"));
   $("dns-presets-list").addEventListener("change", (ev) => {
     const id = ev.target.dataset && ev.target.dataset.presetToggle;
-    if (id) togglePreset(id, ev.target.checked);
+    if (id) togglePreset(id, ev.target.checked, ev.target);
   });
   $("dns-rules-list").addEventListener("click", async (ev) => {
     const id = ev.target.dataset && ev.target.dataset.delRule;
