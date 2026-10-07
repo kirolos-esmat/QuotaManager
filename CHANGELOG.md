@@ -6,6 +6,61 @@ language: what changed and how it affects you.
 _(For developers: versions live in `quota/version.py`; a release tag must
 match it. Release notes are composed from a version's section below.)_
 
+## [0.4.1] — 2026-10-05
+
+### Added
+- **Automotive Speedometer Gauge**: A brand-new, high-precision monthly bundle dial featuring a vibrant safe zone (0–80%) and an intense glowing scarlet redline warning zone (80–100%) so you can see your remaining quota at a glance.
+- **3 Distinct Speedometer Gauge Styles**: Choose your preferred monthly bundle gauge design directly from the Settings menu:
+  - **Sports Needle**: A real rotating precision tachometer needle that sweeps across the dial as data is used.
+  - **Digital Segmented LED**: High-tech illuminated dashboard blocks inspired by racing telemetry.
+  - **Electric Horizon Arc**: A minimalist, futuristic glowing neon curve with a scarlet warning cap.
+- **Themes & Appearance Engine**: Customize your dashboard's visual style with 4 selectable color schemes: Obsidian Glass (Default), Cyberpunk Neon, Emerald Mint, and Sunset Crimson.
+- **Dynamic Background FX**: Pick from 4 ambient animated canvas backgrounds (Network Mesh, Cosmic Starfield, Digital Rain Matrix, or Clean Static).
+- **Temporary Device Kick (5-Second Disconnect)**: Easily disconnect or kick any device for 5 seconds to force it to drop connections or refresh its IP lease without permanently blacklisting or banning it from the network.
+- **Smooth Panel Transitions**: Lightning-fast, instant tab switching across the sidebar with zero repeated loading flickers on previously visited pages.
+
+### Changed
+- **Organized Sidebar Bundle Widget**: Redesigned the sidebar metrics below the gauge into a clean 3-row layout: Remaining quota and days left on top, a dedicated full-width period badge in the middle that never crowds the edges, and clear device/user counters at the bottom.
+- **Card Ordering**: The Protected Gateway is now permanently pinned at the top of your network list, registered users sit neatly in the middle, and guest/unassigned devices are grouped at the bottom.
+- **System Logs Scroll Window**: The system logs viewer in the Admin panel is now cleanly contained in a scrollable console window so long logs never push the rest of the page down.
+- **Streamlined Pure Linux Stack**: Cleaned up the packaging and runtime to focus exclusively on native bare-metal Linux (Debian & Kali) performance with no container overhead.
+
+### Fixed
+- **DNS Category Filters & Parental Controls**: Fixed an issue where opening the DNS tab could show a blank list of category presets, ensuring all parental controls (Adult content, Gambling, Social media, Streaming) and the master protection switch are always visible and responsive.
+- **Gauge Dial Visual Polish**: Fixed an issue where the gauge arc could show duplicate ghost arcs or overlap the title bar, ensuring needle length, center pivot, and text labels are perfectly framed.
+- **Gauge Selector Button Labels**: Fixed an issue where long style names could spill outside their selector buttons on smaller screens.
+- **VPN Proxy Routing While Quota Blocked**: Fixed an issue where cutting the gateway's own quota would block outgoing connections to your configured VPN servers, ensuring proxy traffic and management remain reachable.
+
+## [0.4.0] — 2026-10-01
+
+### Added
+- **Built-in VPN Service**: You can now connect your whole network — or select devices — to a VPN directly from the dashboard, without needing any VPN apps installed on your phones, TVs, or computers.
+  - **One-Click Link Import**: Easily paste standard VPN links or scan QR codes (supports VLESS, VMess, Shadowsocks, Trojan, and WireGuard).
+  - **Live Speed Meters**: Watch live download and upload speeds and track total data transferred through the VPN.
+  - **Choose Who Uses the VPN**: Selectively route specific family members or devices through the VPN while keeping gaming consoles or work laptops on your regular internet line.
+  - **Proxy Settings Editor**: Edit server addresses, ports, and connection settings right inside the dashboard.
+  - **Always Connected**: The VPN automatically reconnects if the gateway restarts, the internet blips, or you refresh your browser.
+- **Telegram Alerts on Public IP Changes**:
+  - Receive an instant message on your phone via Telegram whenever your home router gets a new public IP address from your provider.
+  - Each alert includes the new IP address, timestamp, and a clickable link to open your dashboard from outside your home.
+  - Includes a "Send Test Message" button in the WAN tab to verify your bot instantly.
+- **Network-Wide Ad Blocker & Family Safety Shield**:
+  - Block ads, trackers, and popup banners across all connected devices in your home — including smart TVs and mobile apps — with zero client software needed.
+  - Two simple protection levels: **Standard** (everyday fast ad blocking) and **Ultra PRO** (maximum shield against aggressive ads, telemetry, and tracking).
+  - Built-in parental control switches to block adult websites, gambling, social media, or streaming video across the house or on specific devices.
+- **Browsing History & Activity Insights**:
+  - Visual charts showing the most visited apps and websites (like YouTube, TikTok, Netflix, Facebook) and daily activity timelines per device.
+- **Fixed Device IP Reservations**:
+  - Permanently reserve specific IP addresses for your printers, servers, or gaming consoles directly from the Network tab with a single click.
+
+### Fixed
+- **Seamless VPN Internet Connection**: Fixed an issue where connecting to a VPN could freeze network traffic or temporarily cut internet access across the house.
+- **VPN Latency & Ping Tests**: Fixed ping tests so response times update accurately and display an active testing spinner.
+- **Browsing History Loading Spinner**: Added a smooth loading indicator when opening the History tab so you know data is loading right away instead of seeing an empty screen.
+- **Cleaner Notifications**: Fixed an issue where alert notifications could repeat or stack on top of each other.
+- **Mode Switching Reliability**: Switching between Direct Internet (WAN) mode and Standard Router (LAN) mode is now completely seamless and error-free.
+- **Reduced Log Clutter**: Removed repeated background log warnings, keeping the system logs clean and readable.
+
 ## [0.3.3] - 2026-09-04
 
 ### Fixed

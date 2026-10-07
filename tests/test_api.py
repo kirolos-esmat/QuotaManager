@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+import time
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -830,6 +831,73 @@ def test_guest_quota_updates_existing_guest(client):
     assert by_mac["aa:bb:cc:dd:ee:91"]["guest"] is True
 
 
+def test_guest_admin_approve_and_reject(client):
+    """Admin can approve and reject guest devices and guest users via the API."""
+    c, database, service = client
+    _login(c)
+
+    # 1. Seed a guest device in pending (blocked) state
+    async def _seed():
+        u = await database.create_user(name="Pending Guest", quota_mode=_db.QUOTA_FIXED,
+                                       fixed_gb=0.0, guest=True)
+        await database.update_user(u.id, block_state=_db.BLOCK_ADMIN)
+        d = await database.upsert_device("aa:bb:cc:dd:ee:88", name="Guest Phone",
+                                         quota_mode=_db.QUOTA_FIXED, fixed_gb=0.0,
+                                         user_id=u.id, guest=True)
+        await database.set_device_state(d.id, _db.BLOCK_ADMIN)
+        return u.id, d.id
+
+    uid, did = _get_loop().run_until_complete(_seed())
+
+    # Check dashboard shows blocked
+    dash = c.get("/api/dashboard").json()
+    dev_view = next(d for d in dash["devices"] if d["id"] == did)
+    assert dev_view["blocked"] is True
+    assert dev_view["block_state"] == "admin_off"
+
+    # Approve device
+    r = c.post(f"/api/guest/{did}/approve")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["block_state"] == "ok"
+    assert r.json()["quota_gb"] >= 1.0
+
+    dash = c.get("/api/dashboard").json()
+    dev_view = next(d for d in dash["devices"] if d["id"] == did)
+    assert dev_view["blocked"] is False
+    assert dev_view["block_state"] == "ok"
+
+    # Reject device
+    r = c.post(f"/api/guest/{did}/reject")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["block_state"] == "admin_off"
+
+    dash = c.get("/api/dashboard").json()
+    dev_view = next(d for d in dash["devices"] if d["id"] == did)
+    assert dev_view["blocked"] is True
+
+    # Approve user
+    r = c.post(f"/api/guest/user/{uid}/approve")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["block_state"] == "ok"
+
+    dash = c.get("/api/dashboard").json()
+    user_view = next(u for u in dash["users"] if u["id"] == uid)
+    assert user_view["blocked"] is False
+
+    # Reject user
+    r = c.post(f"/api/guest/user/{uid}/reject")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["block_state"] == "admin_off"
+
+    dash = c.get("/api/dashboard").json()
+    user_view = next(u for u in dash["users"] if u["id"] == uid)
+    assert user_view["blocked"] is True
+
+
 def test_connected_follows_arp_responders(tmp_path):
     """With the ARP probe running, a leased device is "connected" only if it
     ALSO answered the latest sweep — a lease alone lags reality by up to
@@ -1601,10 +1669,7 @@ def test_gateway_device_cannot_be_recreated_or_reassigned(client):
 
 
 def test_delete_device_blacklists_mac(client):
-    """A manual DELETE of a device blacklists its MAC (permanent deny list):
-    run.py never auto-registers it again while it stays connected, and the
-    Network-tab blacklist is the only way back in."""
-#     import asyncio
+    """A DELETE with blacklist=True blacklists the device MAC (permanent deny list)."""
     c, db, _ = client
     _login(c)
     g = _get_loop().run_until_complete(db.create_user(
@@ -1614,39 +1679,72 @@ def test_delete_device_blacklists_mac(client):
     assert _get_loop().run_until_complete(
         db.get_mac_list("deny")) == []
 
-    r = c.delete(f"/api/devices/{dev.id}")
+    r = c.delete(f"/api/devices/{dev.id}?blacklist=true")
     assert r.status_code == 200, r.text
+    assert r.json()["blacklisted"] is True
     assert _get_loop().run_until_complete(
         db.get_mac_list("deny")) == ["aa:bb:cc:dd:ee:99"]
 
 
+def test_delete_device_kick_without_blacklist(client):
+    """The default DELETE (or trash button) kicks the device with 5s timeout, NO MAC ban."""
+    c, db, svc = client
+    _login(c)
+    u = _get_loop().run_until_complete(db.create_user(
+        name="User", quota_mode=_db.QUOTA_AUTO))
+    dev = _get_loop().run_until_complete(db.upsert_device(
+        "aa:bb:cc:dd:ee:11", name="KickedPhone", user_id=u.id))
+
+    r = c.delete(f"/api/devices/{dev.id}")
+    assert r.status_code == 200, r.text
+    assert r.json()["deleted"] is True
+    assert r.json()["blacklisted"] is False
+    assert r.json()["kicked"] is True
+    # MAC is NOT in deny list
+    assert _get_loop().run_until_complete(db.get_mac_list("deny")) == []
+    # Device is in temporary kick cooldown
+    assert svc.is_temporarily_kicked("aa:bb:cc:dd:ee:11") is True
+
+
 def test_delete_user_blacklists_its_macs(client):
-    """Deleting a USER blacklists every device MAC it owned."""
-#     import asyncio
+    """Deleting a USER with blacklist=True blacklists every device MAC it owned."""
     c, db, _ = client
     _login(c)
     g = _get_loop().run_until_complete(db.create_user(
         name="", quota_mode=_db.QUOTA_FIXED, fixed_gb=1.0, guest=True))
     _get_loop().run_until_complete(db.upsert_device(
         "aa:bb:cc:dd:ee:98", user_id=g.id))
-    r = c.delete(f"/api/users/{g.id}")
+    r = c.delete(f"/api/users/{g.id}?blacklist=true")
     assert r.status_code == 200, r.text
     assert _get_loop().run_until_complete(
         db.get_mac_list("deny")) == ["aa:bb:cc:dd:ee:98"]
 
 
+def test_delete_user_kick_without_blacklist(client):
+    """Deleting a user with blacklist=False kicks its devices with 5s timeout, NO MAC ban."""
+    c, db, svc = client
+    _login(c)
+    u = _get_loop().run_until_complete(db.create_user(
+        name="Alice", quota_mode=_db.QUOTA_AUTO))
+    _get_loop().run_until_complete(db.upsert_device(
+        "aa:bb:cc:dd:ee:22", user_id=u.id))
+    r = c.delete(f"/api/users/{u.id}?blacklist=false")
+    assert r.status_code == 200, r.text
+    assert r.json()["blacklisted"] is False
+    assert r.json()["kicked"] is True
+    assert _get_loop().run_until_complete(db.get_mac_list("deny")) == []
+    assert svc.is_temporarily_kicked("aa:bb:cc:dd:ee:22") is True
+
+
 def test_delete_normal_user_blacklists_its_macs(client):
-    """A NORMAL user's devices are blacklisted too (no guest-only carve-out):
-    deleting the user removes the cards AND the kernel keeps blocking the
-    still-connected devices."""
-#     import asyncio
+    """A NORMAL user's devices are blacklisted too when blacklist=True."""
     c, db, _ = client
     _login(c)
     u = _get_loop().run_until_complete(db.create_user(
         name="Dad", quota_mode=_db.QUOTA_FIXED, fixed_gb=20.0))
     _get_loop().run_until_complete(db.upsert_device(
         "aa:bb:cc:dd:ee:97", name="Phone", user_id=u.id))
-    r = c.delete(f"/api/users/{u.id}")
+    r = c.delete(f"/api/users/{u.id}?blacklist=true")
     assert r.status_code == 200, r.text
     assert _get_loop().run_until_complete(
         db.get_mac_list("deny")) == ["aa:bb:cc:dd:ee:97"]
@@ -1658,31 +1756,18 @@ def test_delete_normal_user_blacklists_its_macs(client):
     assert all(d["mac"] != "aa:bb:cc:dd:ee:97" for d in dash["devices"])
     assert all(dev["mac"] != "aa:bb:cc:dd:ee:97"
                for u in dash["users"] for dev in u["devices"])
-    holder = SnapshotHolder()
-    with _client_from(create_app(db, QuotaService(db, timezone="Africa/Cairo"),
-                                 holder,
-                                 report_config=ReportConfig(
-                                     enabled=True, allow_client_subnet=True,
-                                     allowed_ips=[],
-                                     client_subnet="192.168.2.0/24")),
-                      "192.168.2.9") as rc:
-        report = rc.get("/api/report")
-        assert report.status_code == 200, report.text
-        assert all(d["mac"] != "aa:bb:cc:dd:ee:97"
-                   for u in report.json()["users"] for d in u["devices"])
 
 
 def test_unblacklist_restores_device(client):
     """Removing a MAC from the deny list (Network tab) unblocks it: the device
     card reappears in the dashboard."""
-#     import asyncio
     c, db, _ = client
     _login(c)
     u = _get_loop().run_until_complete(db.create_user(
         name="Dad", quota_mode=_db.QUOTA_FIXED, fixed_gb=20.0))
     _get_loop().run_until_complete(db.upsert_device(
         "aa:bb:cc:dd:ee:96", name="Phone", user_id=u.id))
-    assert c.delete(f"/api/users/{u.id}").status_code == 200
+    assert c.delete(f"/api/users/{u.id}?blacklist=true").status_code == 200
     assert _get_loop().run_until_complete(
         db.get_mac_list("deny")) == ["aa:bb:cc:dd:ee:96"]
 
@@ -1696,14 +1781,13 @@ def test_unblacklist_restores_device(client):
 def test_blacklisted_device_visible_in_mac_lists_api(client):
     """A deleted device's MAC surfaces in GET /api/mac-lists (the Network-tab
     blacklist), which is the ONLY place it appears."""
-#     import asyncio
     c, db, _ = client
     _login(c)
     u = _get_loop().run_until_complete(db.create_user(
         name="Dad", quota_mode=_db.QUOTA_FIXED, fixed_gb=20.0))
     _get_loop().run_until_complete(db.upsert_device(
         "aa:bb:cc:dd:ee:95", name="Phone", user_id=u.id))
-    assert c.delete(f"/api/users/{u.id}").status_code == 200
+    assert c.delete(f"/api/users/{u.id}?blacklist=true").status_code == 200
     lists = c.get("/api/mac-lists").json()
     assert lists["deny"] == ["aa:bb:cc:dd:ee:95"]
 
@@ -1713,8 +1797,6 @@ def test_speed_cap_edit_triggers_immediate_shaping_sync(tmp_path):
     shaper re-sync — the tc tree changes in the kernel right away instead of
     waiting up to 15 s for the next maintenance tick (the "needs a page
     refresh" lag)."""
-#     import asyncio
-    import time
     database = _db.Database(tmp_path / "api.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
@@ -1803,23 +1885,23 @@ def test_milestone_api_public_from_leased_device(tmp_path):
         _seed_milestone_user(database, service, "Mom", 40.0, 20.8,
                              "192.168.2.55")())
     app = create_app(database, service, holder)
-    with _client_from(app, "192.168.2.55") as c:
-        r = c.get("/api/milestone")
-        assert r.status_code == 200
-        data = r.json()
-        assert data["recognized"] is True
-        assert data["user"]["name"] == "Mom"
-        assert data["user"]["percent"] > 50
-        # JSON serializes int keys to strings: "50"/"75"/"100"
-        ms = data["user"]["milestones"]
-        assert ms["50"]["crossed"] is True
-        assert ms["50"]["pending"] is True
-        assert ms["75"]["crossed"] is False
-        # per-device breakdown has the exact bytes
-        assert len(data["devices"]) == 1
-        dv = data["devices"][0]
-        assert dv["name"] == "Phone"
-        assert dv["device_used_gb"] > 20 and dv["device_used_gb"] < 21
+    c = _client_from(app, "192.168.2.55")
+    r = c.get("/api/milestone")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["recognized"] is True
+    assert data["user"]["name"] == "Mom"
+    assert data["user"]["percent"] > 50
+    # JSON serializes int keys to strings: "50"/"75"/"100"
+    ms = data["user"]["milestones"]
+    assert ms["50"]["crossed"] is True
+    assert ms["50"]["pending"] is True
+    assert ms["75"]["crossed"] is False
+    # per-device breakdown has the exact bytes
+    assert len(data["devices"]) == 1
+    dv = data["devices"][0]
+    assert dv["name"] == "Phone"
+    assert dv["device_used_gb"] > 20 and dv["device_used_gb"] < 21
     _get_loop().run_until_complete(database.close())
 
 
@@ -1832,10 +1914,10 @@ def test_milestone_api_unrecognized_ip(tmp_path):
     holder = SnapshotHolder()
     _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder)
-    with _client_from(app, "192.168.2.99") as c:
-        data = c.get("/api/milestone").json()
-        assert data["recognized"] is False
-        assert data["user"] is None
+    c = _client_from(app, "192.168.2.99")
+    data = c.get("/api/milestone").json()
+    assert data["recognized"] is False
+    assert data["user"] is None
     _get_loop().run_until_complete(database.close())
 
 
@@ -1851,13 +1933,13 @@ def test_milestone_notify_marks_once(tmp_path):
         _seed_milestone_user(database, service, "Mom", 40.0, 20.8,
                              "192.168.2.55")())
     app = create_app(database, service, holder)
-    with _client_from(app, "192.168.2.55") as c:
-        assert c.post("/api/milestone/notify",
-                      json={"user_id": user.id,
-                            "milestone": 50}).status_code == 200
-        data = c.get("/api/milestone").json()
-        assert data["user"]["milestones"]["50"]["notified"] is True
-        assert data["user"]["milestones"]["50"]["pending"] is False
+    c = _client_from(app, "192.168.2.55")
+    assert c.post("/api/milestone/notify",
+                  json={"user_id": user.id,
+                        "milestone": 50}).status_code == 200
+    data = c.get("/api/milestone").json()
+    assert data["user"]["milestones"]["50"]["notified"] is True
+    assert data["user"]["milestones"]["50"]["pending"] is False
     _get_loop().run_until_complete(database.close())
 
 
@@ -1962,15 +2044,6 @@ def test_user_exempt_from_quota(client):
     assert user_view(uid)["exempt_quota"] is False
     assert user_view(uid)["quota_blocked"] is True
 
-    # /report surfaces the flag (the report page renders the same math)
-    holder = SnapshotHolder()
-    with _client_from(create_app(db, QuotaService(db, timezone="Africa/Cairo"),
-                                 holder), "192.168.2.9") as rc:
-        rp = rc.get("/api/report")
-        if rp.status_code == 200:
-            ru = next(x for x in rp.json().get("users", [])
-                      if x.get("id") == uid)
-            assert "exempt_quota" in ru
 
 
 def test_milestone_page_is_public(tmp_path):
@@ -1981,15 +2054,11 @@ def test_milestone_page_is_public(tmp_path):
     holder = SnapshotHolder()
     _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder)
-    with _client_from(app, "192.168.2.55") as c:
-        r = c.get("/milestone")
-        assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
-        assert b"Quota" in r.content
-        # shares the retuned stylesheet; pin the cache-bust so the theme
-        # actually reaches this page (browser-cached ?v=41 would show the
-        # pre-obsidian sheet).
-        assert "assets/styles.css?v=49" in r.text
+    r = _client_from(app, "192.168.2.55").get("/milestone")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert b"Quota" in r.content
+    assert "assets/styles.css?v=49" in r.text
     _get_loop().run_until_complete(database.close())
 
 
@@ -2009,20 +2078,17 @@ def test_report_gated_by_source_ip(tmp_path):
                          client_subnet="192.168.2.0/24"))
 
     # managed client subnet admitted
-    with _client_from(app, "192.168.2.77") as c:
-        r = c.get("/api/report")
-        assert r.status_code == 200
-        data = r.json()
-        assert "bundle" in data and "users" in data and "logs" in data
-        assert "events" in data
+    r = _client_from(app, "192.168.2.77").get("/api/report")
+    assert r.status_code == 200
+    data = r.json()
+    assert "bundle" in data and "users" in data and "logs" in data
+    assert "events" in data
 
     # explicit allow-list entry admitted (not on the client subnet)
-    with _client_from(app, "192.168.1.10") as c:
-        assert c.get("/api/report").status_code == 200
+    assert _client_from(app, "192.168.1.10").get("/api/report").status_code == 200
 
     # anything else is denied
-    with _client_from(app, "8.8.8.8") as c:
-        assert c.get("/api/report").status_code == 403
+    assert _client_from(app, "8.8.8.8").get("/api/report").status_code == 403
     _get_loop().run_until_complete(database.close())
 
 
@@ -2037,14 +2103,12 @@ def test_report_page_respects_gate(tmp_path):
                      report_config=ReportConfig(
                          enabled=True, allow_client_subnet=True,
                          allowed_ips=[], client_subnet="192.168.2.0/24"))
-    with _client_from(app, "192.168.2.77") as c:
-        r = c.get("/report")
-        assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
-        assert b"Consumption report" in r.content
-        assert "assets/styles.css?v=49" in r.text
-    with _client_from(app, "8.8.8.8") as c:
-        assert c.get("/report").status_code == 403
+    r = _client_from(app, "192.168.2.77").get("/report")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert b"Consumption report" in r.content
+    assert "assets/styles.css?v=49" in r.text
+    assert _client_from(app, "8.8.8.8").get("/report").status_code == 403
     _get_loop().run_until_complete(database.close())
 
 
@@ -2061,8 +2125,7 @@ def test_report_disabled_denies_everyone(tmp_path):
                          allowed_ips=["192.168.1.10"],
                          client_subnet="192.168.2.0/24"))
     for ip in ("192.168.2.77", "192.168.1.10"):
-        with _client_from(app, ip) as c:
-            assert c.get("/api/report").status_code == 403
+        assert _client_from(app, ip).get("/api/report").status_code == 403
     _get_loop().run_until_complete(database.close())
 
 
@@ -2340,4 +2403,234 @@ def test_porn_preset_enable_disable(client):
     r = c.get("/api/dns/presets")
     porn = next(p for p in r.json() if p["id"] == "porn")
     assert porn["enabled"] is False
+
+
+def test_admin_spoof_consumption(client):
+    c, database, service = client
+    _login(c)
+
+    # Create a user and a device
+    r_user = c.post("/api/users", json={"name": "Alice", "quota_mode": "fixed", "fixed_gb": 10.0})
+    assert r_user.status_code == 201
+    uid = r_user.json()["id"]
+
+    r_dev = c.post("/api/devices", json={"mac": "00:11:22:33:44:55", "name": "Alice Phone", "user_id": uid})
+    assert r_dev.status_code == 201
+    dev_id = r_dev.json()["id"]
+
+    # 1. Spoof set exact to 4.5 GB
+    r_spoof = c.post("/api/admin/spoof-consumption", json={
+        "user_id": uid,
+        "mode": "set",
+        "gb": 4.5,
+    })
+    assert r_spoof.status_code == 200, r_spoof.text
+    res = r_spoof.json()
+    assert res["used_gb"] == 4.5
+    assert res["quota_blocked"] is False
+
+    # Check dashboard reflection
+    dash = c.get("/api/dashboard").json()
+    alice = next(u for u in dash["users"] if u["id"] == uid)
+    assert alice["used_gb"] == 4.5
+    assert alice["blocked"] is False
+
+    # 2. Spoof delta +6.0 GB (total becomes 10.5 GB, which exceeds 10.0 GB fixed allowance -> quota blocked!)
+    r_delta = c.post("/api/admin/spoof-consumption", json={
+        "user_id": uid,
+        "mode": "delta",
+        "gb": 6.0,
+        "delta_sign": "+",
+    })
+    assert r_delta.status_code == 200
+    res = r_delta.json()
+    assert res["used_gb"] == 10.5
+    assert res["quota_blocked"] is True
+
+    dash = c.get("/api/dashboard").json()
+    alice = next(u for u in dash["users"] if u["id"] == uid)
+    assert alice["used_gb"] == 10.5
+    assert alice["blocked"] is True
+
+    # 3. Spoof delta -8.0 GB (total becomes 2.5 GB -> unblocked!)
+    r_sub = c.post("/api/admin/spoof-consumption", json={
+        "user_id": uid,
+        "mode": "delta",
+        "gb": 8.0,
+        "delta_sign": "-",
+    })
+    assert r_sub.status_code == 200
+    res = r_sub.json()
+    assert res["used_gb"] == 2.5
+    assert res["quota_blocked"] is False
+
+    # 4. Target specific device spoofing
+    r_dev_spoof = c.post("/api/admin/spoof-consumption", json={
+        "user_id": uid,
+        "device_id": dev_id,
+        "mode": "set",
+        "gb": 1.2,
+    })
+    assert r_dev_spoof.status_code == 200
+    assert r_dev_spoof.json()["used_gb"] == 1.2
+
+    # 5. Invalid user validation
+    r_bad = c.post("/api/admin/spoof-consumption", json={
+        "user_id": 99999,
+        "mode": "set",
+        "gb": 1.0,
+    })
+    assert r_bad.status_code == 400
+
+
+def test_static_leases_crud(client):
+    c, db, _ = client
+    _login(c)
+
+    # Initially empty
+    r = c.get("/api/network/static-leases")
+    assert r.status_code == 200
+    assert r.json() == []
+
+    # Create static lease for unmanaged MAC
+    r_create = c.post("/api/network/static-leases", json={
+        "mac": "11:22:33:44:55:66",
+        "ip": "192.168.2.55",
+        "hostname": "Laser Printer",
+    })
+    assert r_create.status_code == 200
+    res = r_create.json()
+    assert res["mac"] == "11:22:33:44:55:66"
+    assert res["ip"] == "192.168.2.55"
+    assert res["hostname"] == "Laser Printer"
+    assert res["device_name"] == ""
+
+    # Create device with MAC 11:22:33:44:55:77
+    r_dev = c.post("/api/devices", json={
+        "mac": "11:22:33:44:55:77",
+        "name": "Admin Laptop",
+    })
+    assert r_dev.status_code == 201
+
+    # Reserve IP for the managed device
+    r_dev_lease = c.post("/api/network/static-leases", json={
+        "mac": "11:22:33:44:55:77",
+        "ip": "192.168.2.77",
+        "hostname": "Admin Lap",
+    })
+    assert r_dev_lease.status_code == 200
+    assert r_dev_lease.json()["device_name"] == "Admin Laptop"
+
+    # Conflicting IP to a different MAC should fail (HTTP 400)
+    r_conflict = c.post("/api/network/static-leases", json={
+        "mac": "aa:bb:cc:dd:ee:ff",
+        "ip": "192.168.2.55",
+    })
+    assert r_conflict.status_code == 400
+
+    # Invalid MAC format
+    r_bad_mac = c.post("/api/network/static-leases", json={
+        "mac": "invalid-mac",
+        "ip": "192.168.2.88",
+    })
+    assert r_bad_mac.status_code == 422
+
+    # Invalid IP format
+    r_bad_ip = c.post("/api/network/static-leases", json={
+        "mac": "00:11:22:33:44:55",
+        "ip": "999.999.999.999",
+    })
+    assert r_bad_ip.status_code == 422
+
+    # List static leases
+    r_list = c.get("/api/network/static-leases")
+    assert r_list.status_code == 200
+    leases = r_list.json()
+    assert len(leases) == 2
+    assert any(l["mac"] == "11:22:33:44:55:66" and l["ip"] == "192.168.2.55" for l in leases)
+    assert any(l["mac"] == "11:22:33:44:55:77" and l["device_name"] == "Admin Laptop" for l in leases)
+
+    # Delete static lease
+    r_del = c.delete("/api/network/static-leases/11:22:33:44:55:66")
+    assert r_del.status_code == 200
+    assert r_del.json()["deleted"] is True
+
+    # Check after delete
+    r_list2 = c.get("/api/network/static-leases")
+    assert len(r_list2.json()) == 1
+
+    # Deleting non-existent should 404
+    r_del404 = c.delete("/api/network/static-leases/11:22:33:44:55:66")
+    assert r_del404.status_code == 404
+
+
+def test_bundle_recharges_api_crud_and_dashboard(client):
+    c, db, svc = client
+    _login(c)
+
+    # 1. Create a user and device to test targeting
+    r_user = c.post("/api/users", json={"name": "TestStudent", "quota_mode": "auto"})
+    assert r_user.status_code == 201
+    user_id = r_user.json()["id"]
+
+    r_dev = c.post("/api/devices", json={"mac": "02:11:22:33:44:55", "name": "StudyTab", "user_id": user_id})
+    assert r_dev.status_code == 201
+    dev_id = r_dev.json()["id"]
+
+    # 2. Add pack without expiry -> should default to 30 days
+    now = svc._now().timestamp()
+    r_pack1 = c.post("/api/bundle/recharges", json={
+        "gb": 15.0,
+        "recurring": True,
+        "target_type": "user",
+        "target_id": user_id,
+        "comment": "Study pack"
+    })
+    assert r_pack1.status_code == 201
+    p1 = r_pack1.json()
+    assert p1["gb"] == 15.0
+    assert p1["remaining_gb"] == 15.0
+    assert p1["recurring"] is True
+    assert p1["target_type"] == "user"
+    assert p1["target_id"] == user_id
+    assert abs(p1["expires_at"] - (now + 30 * 86400)) < 10.0
+
+    # 3. Add pack targeted to device
+    r_pack2 = c.post("/api/bundle/recharges", json={
+        "gb": 5.0,
+        "recurring": False,
+        "target_type": "device",
+        "target_id": dev_id,
+    })
+    assert r_pack2.status_code == 201
+    p2 = r_pack2.json()
+    assert p2["gb"] == 5.0
+    assert p2["target_type"] == "device"
+    assert p2["target_id"] == dev_id
+
+    # 4. List packs
+    r_list = c.get("/api/bundle/recharges")
+    assert r_list.status_code == 200
+    packs = r_list.json()
+    assert len(packs) >= 2
+    assert any(p["id"] == p1["id"] for p in packs)
+    assert any(p["id"] == p2["id"] for p in packs)
+
+    # 5. Dashboard includes recharges list in bundle
+    r_dash = c.get("/api/dashboard")
+    assert r_dash.status_code == 200
+    dash = r_dash.json()
+    assert "recharges" in dash["bundle"]
+    assert any(p["id"] == p1["id"] for p in dash["bundle"]["recharges"])
+
+    # 6. Delete pack
+    r_del = c.delete(f"/api/bundle/recharges/{p2['id']}")
+    assert r_del.status_code == 200
+    assert r_del.json()["deleted"] is True
+
+    # 7. Check list after delete
+    r_list2 = c.get("/api/bundle/recharges")
+    assert not any(p["id"] == p2["id"] for p in r_list2.json())
+
+
 

@@ -18,9 +18,12 @@ the project layout, tests, and the release process.
 - [Quota model](#quota-model)
 - [Speed shaping](#speed-shaping)
 - [DNS filtering (domain rules, presets, per-client DNS servers)](#dns-filtering-domain-rules-presets-per-client-dns-servers)
-- [Rogue devices & the ARP gateway-lock](#rogue-devices--the-arp-gateway-lock)
-- [Strong (WAN) mode](#strong-wan-mode)
+- [Strong (WAN) mode & Telegram IP Engine](#strong-wan-mode)
 - [VPN share](#vpn-share)
+- [Native VPN Subsystem (sing-box Core & Clash API)](#native-vpn-subsystem-sing-box-core--clash-api)
+- [Ultra Ad-Blocker & History Analytics Engine](#ultra-ad-blocker--history-analytics-engine)
+- [Speedometer Gauge & Frontend Subsystems (Themes, Particles, Navigation)](#speedometer-gauge--frontend-subsystems-themes-particles-navigation)
+- [Software updates](#software-updates)
 - [Key design decisions](#key-design-decisions)
 - [Known bottlenecks & technical debt](#known-bottlenecks--technical-debt)
 - [Requirements](#requirements)
@@ -40,7 +43,7 @@ user's allowance covers all their devices (phone + tablet + laptop share one
 slice); when the user exceeds it, every device they own is cut at once, and a
 per-device *exempt* flag can keep one device online.
 
-The deployment target is **Linux on an old laptop** (Kali/Debian) because the
+The deployment target is **Linux on an old laptop, rooted Android phone, or OpenWrt router** (Kali/Debian/OpenWrt) because the
 kernel owns the network path: nftables counts and drops at line rate with **no
 Python in the packet path**. The web dashboard (FastAPI + WebSocket) is only the
 control plane.
@@ -676,6 +679,41 @@ drops internet briefly) re-dials on its own. Both only run while ppp0 is
 actually **up** (a dead dial has nothing to renew into), and the last-renewed
 timestamp is persisted so a gateway restart never re-renews mid-schedule.
 
+### Telegram WAN IP Detection & Notification Engine
+
+`quota/wan_telegram.py` provides an asynchronous public IP monitoring and alert
+subsystem for remote gateway administration:
+
+- **Detection Strategy (`get_current_public_ip`)**:
+  - In **Strong (WAN) mode**, reads the kernel's local address assigned to `ppp0`
+    via `detect_ppp` in `quota/topology.py` (instantaneous sysfs/netlink query,
+    zero network latency, no external dependencies).
+  - When running in LAN mode or during PPPoE initialization, falls back to external
+    probes: HTTP GET to `https://api.ipify.org?format=json` via `httpx.AsyncClient`
+    (6.0s timeout), followed by `https://icanhazip.com` via threaded `urllib.request`.
+- **State Machine & Notification Deduplication**:
+  - Polled periodically during the maintenance cycle (`quota/netmgr.py`).
+  - IP changes are compared against the SQLite setting `wan_telegram_last_ip`.
+  - When an IP change is detected and Telegram notifications are enabled
+    (`wan_telegram_enabled == 1`), `send_telegram_message` is invoked with an
+    escaped HTML payload formatted by `format_wan_ip_message`.
+  - The notification includes:
+    - Current Public IPv4 address wrapped in `<code>` tags.
+    - Timestamp formatted as `%Y-%m-%d %H:%M:%S`.
+    - Active egress interface name (e.g. `ppp0`).
+    - **Firewall WAN Remote Access Status**: dynamically queries `FirewallConfig.wan_web_access`.
+      If remote WAN port access is open, outputs a clickable URL
+      (`{web_proto}://{ip}:{web_port}`); if blocked by nftables input policy,
+      outputs a warning banner alerting the operator that remote management must
+      be unblocked in the Firewall tab.
+- **Resilience**:
+  - Primary network requests utilize `httpx.AsyncClient` with a 10.0s timeout.
+  - Automatic runtime fallback to a daemon thread running `urllib.request.urlopen`
+    with JSON payload serialization if `httpx` is missing or uninstalled.
+  - Endpoints: `POST /api/wan/telegram` (updates token/chat_id/enabled),
+    `POST /api/wan/telegram/test` (synchronously triggers test alert). Tokens are
+    masked (`1234...wxyz`) in UI API responses via `mask_bot_token`.
+
 ---
 
 ## VPN share
@@ -800,6 +838,205 @@ the tunnel drops, the subnet is blackholed on purpose — never silently
 re-routed around the quota; while relaying, the box's own internet flows (and
 stays metered into the Gateway user) UNLESS you cut it — the whitelist only
 keeps the VPN-server endpoints reachable under that cut.
+
+---
+
+## Native VPN Subsystem (sing-box Core & Clash API)
+
+Quota Manager v0.4.0 integrates a native, production-grade VPN core supervisor
+(`quota/vpn_manager.py` and `quota/vpn_parser.py`) powered by the `sing-box` engine
+(v1.10+ / v1.14+). This subsystem runs on the gateway box, eliminating third-party
+desktop or mobile VPN clients on end-user devices.
+
+### Architecture & Process Supervision (`quota/vpn_manager.py`)
+
+- **Subprocess Supervision Lifecycle**:
+  - The `VpnManager` class manages the lifecycle of the underlying `sing-box` binary.
+  - Automatically discovers the binary using `find_sing_box_binary` across system paths
+    (`/usr/local/bin/sing-box`, `/usr/bin/sing-box`, `/opt/sing-box/sing-box`, and PATH).
+  - Generates a standalone configuration JSON (`tempfile.NamedTemporaryFile`) on connect.
+  - Spawns the supervisor process via `asyncio.create_subprocess_exec("sing-box", "run", "-c", config_path)`
+    with stdout and stderr piped to a circular in-memory buffer (`collections.deque(maxlen=500)`).
+  - State transitions: `STATE_DISCONNECTED` → `STATE_CONNECTING` → `STATE_CONNECTED` (or `STATE_ERROR`).
+- **Clean Signal Handling & Process Termination**:
+  - Stopping or reconnecting sends `SIGTERM` to the process group.
+  - Accompanied by an asynchronous timeout grace period (2.0s). If the process fails
+    to terminate within 2 seconds, escalates to `SIGKILL` (`proc.kill()`) to prevent
+    zombie processes or locked tun interfaces.
+  - In `run.py`, the supervisor bridges asyncio `_stop_event` directly to
+    `uvicorn.Server.should_exit`, preventing event-loop hangs during service restarts.
+- **Auto-Healing & State Persistence**:
+  - The active node ID and auto-connect state are persisted in SQLite:
+    `vpn_auto_connect = "1"`, `vpn_active_node_id = <node_id>`.
+  - On gateway reboot or service startup, `VpnManager.initialize()` detects the saved
+    state and automatically spins up the tunnel in the background.
+  - A background health check monitors `proc.returncode`. If the process unexpectedly
+    exits (e.g., remote server crash or network drop), the daemon logs an error and
+    initiates an automatic reconnect backoff sequence.
+
+### Configuration Synthesis & Parser Engine (`quota/vpn_parser.py`)
+
+- **Supported Link Protocols**:
+  - **VLESS**: Parses UUID, remote host, port, flow (`xtls-rprx-vision`), and security settings.
+    Supports **Reality** (`security=reality&pbk=...&sid=...&sni=...`) with UTLS client
+    fingerprinting (e.g. `chrome`, `firefox`), and standard TLS with ALPN negotiation.
+  - **VMess**: Decodes base64-encoded JSON schemes extracting server, port, UUID, alterId,
+    cipher security (`auto`, `aes-128-gcm`, `chacha20-poly1305`), and transport layer
+    (`ws` with HTTP request headers/path, or TCP).
+  - **Shadowsocks**: Supports SIP002 URIs (`ss://<base64>@host:port#name`) with AEAD ciphers
+    (`aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`), custom password parsing,
+    and UDP over TCP (`uot`).
+  - **Trojan**: Parses password, server, port, and SNI/TLS configurations.
+  - **WireGuard**: Parses private key, peer public key, preshared key, endpoint, MTU,
+    and interface address allocations.
+- **Inbound TUN Configuration (`quota-vpn`)**:
+  - Type: `tun`, Interface name: `quota-vpn`.
+  - **Stack: `gvisor`**: The network stack is explicitly configured to `gvisor` with MTU `1500`.
+    This userspace TCP/IP stack eliminates kernel TUN fragmentation bugs, MTU clipping,
+    and connection freezes on high-bandwidth links.
+  - `auto_route: true`, `strict_route: true`.
+- **Preventing Network Blackholing & Route Loops**:
+  - Local LAN and management subnets (`192.168.1.0/24`, `192.168.2.0/24`, `127.0.0.0/8`)
+    are prioritized in the router rules and assigned to `outbound: "direct"`. This ensures
+    that LAN traffic, gateway dashboard management (`:8080`), and local DNS queries
+    are never diverted into the VPN tunnel.
+  - **Process-Search Suppression**:
+    `find_process: false` is explicitly set in the sing-box router block. Because forwarded
+    gateway packets traversing nftables do not have local Linux socket owners, disabling
+    process search eliminates thousands of `router: failed to search process: process not found`
+    log warnings per hour.
+  - Modern sing-box 1.14+ DNS format: Uses top-level `dns.servers` array with standard
+    `address` fields instead of deprecated outbound syntax.
+- **Global Certificate Insecurity Switch**:
+  - `vpn_allow_insecure` setting: When enabled, `generate_sing_box_config` sets
+    `tls.insecure: true` across all generated outbounds, permitting connections to
+    self-signed or dynamic testing proxies.
+
+### Clash API Telemetry Integration
+
+- Sing-box is configured with an embedded Clash external controller on `127.0.0.1:9090`.
+- The web dashboard and Python API poll this controller asynchronously:
+  - `GET /traffic`: Real-time instantaneous uplink and downlink byte counters (Bps).
+  - `GET /connections`: Granular inspection of all active sockets passing through the proxy,
+    displaying source IP, destination domain/IP, connection duration, and cumulative upload/download metrics.
+- **Latency Testing (`ping_node`)**:
+  - Connects directly to the proxy node's endpoint using socket TCP handshakes or HTTP HEAD
+    probes through the proxy.
+  - UI triggers an active testing spinner and persists round-trip time (RTT in ms) to the
+    `vpn_nodes` SQLite record for display in node cards.
+
+### Granular Policy Routing
+
+- Allows selective per-user and per-device VPN tunneling.
+- Backed by SQLite settings: `vpn_routing_users` (JSON array of user IDs) and
+  `vpn_routing_devices` (JSON array of device MACs).
+- Devices or users assigned to the VPN are matched in nftables (`meta mark set 0x100`)
+  and routed through Linux routing table `100` (`ip rule add fwmark 0x100 lookup 100`),
+  while unassigned devices fall through to the default gateway (WAN/uplink), providing
+  frictionless split-tunneling across the household.
+
+---
+
+## Ultra Ad-Blocker & History Analytics Engine
+
+### Multi-Engine Ad & Threat Blocker
+
+`quota/dns_rules.py` provides high-performance, centralized hardware-level DNS
+filtering running directly on top of `dnsmasq`:
+
+- **Tiered Protection Engines**:
+  - **🔥 Ultra PRO**: Aggregates three industry-standard threat and ad-blocking feeds:
+    1. *HaGeZi Multi PRO*: Massive coverage of telemetry, spyware, trackers, and ad networks.
+    2. *AdGuard Mobile & Web Filter*: Targeted blocking of mobile in-app banners and video tracking.
+    3. *Anudeep White/Blacklists*: Curated protection against telemetry and phishing.
+    - Yields over 180,000 distinct domains. Compiles in memory, deduplicates via set union,
+      and writes directly into `/etc/dnsmasq.d/quota-dns-rules.conf` as `address=/domain/`.
+  - **⚡ Standard**: StevenBlack unified hosts blocklist (~45,000 domains), optimized for
+    minimal memory footprint and zero false positives on common streaming services.
+- **Parental Controls & Category Blocking**:
+  - **Adult Content / Porn Filter**: Two-layer hybrid protection:
+    - Layer 1: Cloudflare Family upstream DNS (`1.1.1.3` / `1.0.0.3`) for dynamic real-time
+      categorization and hard SafeSearch enforcement on Google, Bing, and YouTube.
+    - Layer 2: Fast local blocklist (`PORN_DOMAINS`) compiled directly into zero-route directives.
+  - **Social Media Blocklist**: Blocks TikTok, Instagram, Facebook, Twitter/X, Reddit, Snapchat, Discord.
+  - **Gambling & Crypto Scams**: Curated blocklist of online casinos and crypto phishing vectors.
+  - **Streaming Throttling**: Restricts access to YouTube, Netflix, Prime Video, Twitch.
+
+### Real-Time Browsing History & Domain Analytics (`quota/history_analytics.py`)
+
+- **DNS Log Ingestion (`quota/dnslog.py`)**:
+  - Asynchronously tails the dnsmasq log buffer or SQLite event store.
+  - Extracts timestamp, requesting client IP (mapped to managed device/user), queried domain,
+    and return response code.
+- **Categorization & Service Identification Engine**:
+  - Maps incoming queries against `KNOWN_SERVICES` regex / prefix trees:
+    - *YouTube*: `googlevideo.com`, `youtube.com`, `youtu.be`, `ytimg.com`.
+    - *Facebook / Meta*: `fbcdn.net`, `facebook.com`, `meta.com`, `fbsbx.com`.
+    - *WhatsApp*: `whatsapp.net`, `whatsapp.com`.
+    - *TikTok*: `tiktokcdn.com`, `tiktokv.com`, `byteoversea.com`.
+    - *ChatGPT / AI*: `chatgpt.com`, `oaistatic.com`, `oaiusercontent.com`, `anthropic.com`.
+  - Assigns brand colors (e.g. `#FF0000` for YouTube, `#0084FF` for Facebook) and icon tags.
+- **Base Domain Parsing (`get_base_domain`)**:
+  - Strips subdomains and CDNs down to canonical root domains using multi-part TLD parsing
+    (handling `.com.eg`, `.co.uk`, `.gov.eg`, etc.).
+- **Interactive UI Timeline**:
+  - Provides REST endpoint `GET /api/history/analytics` delivering:
+    - Total DNS queries count.
+    - Hourly time-series distribution histogram for activity heatmaps.
+    - Top 10 identified web services with usage percentages.
+    - Top 10 base domains.
+
+---
+
+## Speedometer Gauge & Frontend Subsystems (Themes, Particles, Navigation)
+
+The frontend features a responsive, GPU-accelerated speedometer gauge, an adaptive visual theme system, an interactive background particle FX engine, and optimized multi-tab panel navigation:
+
+### 1. Speedometer Architecture & SVG Geometry
+The quota gauge is built with scalable inline SVG (`viewBox="0 0 190 90"`), anchored around a center coordinate of `(95, 82)` with an arc radius $R = 64$:
+- **Arc Geometry & Length**:
+  The semicircular path covers $180^\circ$ ($\pi$ radians), giving an exact perimeter:
+  $$L = \pi \times R = \pi \times 64 \approx 201.1\,\text{px}$$
+  Dynamic quota consumption is rendered via SVG dash geometry:
+  `stroke-dasharray: 201.1` and `stroke-dashoffset: 201.1 * (1 - ratio)`.
+- **Track Paths (Safe & Danger Zones)**:
+  - **Safe Track (0% to 80%)**: `d="M 31 82 A 64 64 0 0 1 146.8 44.4"`
+  - **Danger Track (80% to 100%)**: `d="M 146.8 44.4 A 64 64 0 0 1 159 82"`
+- **Three Interchangeable Models**:
+  Users can switch between three visual designs from Settings:
+  1. **Model 1: Needle & Dial (`.gauge-needle`)**: High-contrast needle beam originating from `(95, 82)` to `(95, 42)` (length 40px, maintaining 24px clearance from the outer dial arc). Rotates smoothly from $-90^\circ$ (0%) to $+90^\circ$ (100%) around pivot `(95, 82)`.
+  2. **Model 2: Segmented Arc (`.gauge-segmented`)**: Futuristic HUD style with radial dash segments generated via an SVG `<mask id="gauge-seg-mask">` with `stroke-dasharray: 7 3`.
+  3. **Model 3: Minimal Glowing Arc (`.gauge-minimal`)**: Ultra-clean 6px glowing horizon curve with a subtle backdrop glow.
+- **Sidebar 3-Row Grid Layout**:
+  The sidebar quota stats are organized in a 6-column CSS grid (`.bundle-stats-grid`):
+  - **Row 1**: Remaining GB (columns 1–3) and Days Left (columns 4–6).
+  - **Row 2**: Full-width period badge (columns 1–6) displaying renewal dates or "Manual Cycle" comfortably without text clipping.
+  - **Row 3**: Users (columns 1–2), Devices (columns 3–4), and Blocked devices (columns 5–6).
+
+### 2. Theme Engine & Particle Background FX
+- **Themes**: Supported color schemes (`theme-classic-dark`, `theme-matrix`, `theme-cyberpunk`, `theme-ocean-calm`, `theme-nordic-frost`) persist in `localStorage`.
+- **Particle Canvas (`#bg-canvas`)**: Runs on a native HTML5 Canvas using `requestAnimationFrame`:
+  - `mesh`: Interactive geometric node web with distance-threshold line connections.
+  - `starfield`: 3D warp-speed starfield simulation.
+  - `matrix`: Digital raining green code stream.
+  - `clean`: Minimalist ambient static background without animations.
+  - Canvas throttles during tab inactivity and auto-resizes on viewport changes.
+
+### 3. Panel Navigation & Terminal Log Viewport
+- **Race Condition Prevention**: Tab switching coordinates through `activePanelLoadSeq` and cached panel states (`loadedPanels`, `isPanelContentLoaded`) to prevent asynchronous payload overrides during rapid tab switching.
+- **Admin Tab Scrollable Logs**: The system and audit log viewports feature fixed-height scrollable terminal containers, ensuring system logs remain readable and accessible without pushing admin controls or action buttons off-screen.
+
+### 4. Device & User Kick vs. Blacklist Lifecycle
+The management plane provides two distinct disconnection modes:
+- **Kick / Disconnect (`POST /api/devices/{id}/kick`, `POST /api/users/{id}/kick` or `DELETE ?blacklist=false`)**:
+  - Drops existing connection states instantly via `conntrack -D` and nftables.
+  - Deletes the DHCP lease from dnsmasq (`database.delete_lease(mac)`).
+  - Registers a temporary 5-second cooldown via `service.register_kick_timeout(mac, 5.0)` to force the client device to renegotiate DHCP.
+  - After 5 seconds, `_schedule_kick_unblock(mac, 5.0)` lifts the kernel drop rule.
+  - The MAC is **not** added to the permanent blacklist (`mac_lists`), allowing the device to reconnect freely once renegotiated.
+- **Block & Blacklist (`POST /api/devices/{id}/block-blacklist`, `POST /api/users/{id}/block-blacklist` or `DELETE ?blacklist=true`)**:
+  - Permanently writes the MAC to `mac_lists` (`deny`).
+  - Instantly drops all active and future traffic at line-rate in nftables until an admin explicitly removes the MAC from the blacklist.
 
 ---
 
@@ -958,6 +1195,29 @@ breaking-change baseline.
   `quota/db.py` (872), `quota/nftables.py` (751), `run.py` (672) — each a god
   module; `quota/engine.py` is the cross-cutting type hub (a field rename ripples
   through every consumer).
+
+**Architectural Resolutions (v0.4.0 Baseline):**
+- **Subsystem Lifecycle & Event Loop Shutdown Bridge**:
+  Service restart hangs previously occurred when asyncio background workers or the
+  sing-box daemon remained alive while Uvicorn's event loop attempted to drain.
+  Resolved by bridging `_stop_event` directly to `uvicorn.Server.should_exit` and
+  enforcing a hard 2-second SIGTERM timeout escalating to SIGKILL on proxy child
+  processes.
+- **gVisor Network Stack for Sing-Box Inbound (`stack: "gvisor"`)**:
+  Default system TUN drivers suffered from MTU clipping and complete packet blackholing
+  under forwarded routing topologies. Standardizing on `gvisor` user-space TCP/IP
+  stack with MTU 1500 resolved packet loss and allowed concurrent LAN-to-VPN
+  routing without kernel interface lockups.
+- **Forwarded Packet Process-Search Log Flood**:
+  Gateway routing forwards packets from `192.168.2.0/24` that lack local Linux socket
+  owners. Sing-box's default router emitted repeated `router: failed to search process:
+  process not found` messages. Disabling `find_process: false` in generated
+  router configurations eliminated this CPU and log overhead.
+- **CRLF vs LF Runtime Normalization**:
+  To protect against cross-platform Windows development artifacts, all shell scripts
+  and packaging templates enforce `eol=lf` via `.gitattributes`. In addition,
+  `TopologyManager` executes runtime in-memory CRLF normalization prior to invoking
+  `topology.sh` or `test_pppoe.sh`.
 
 ---
 
@@ -1248,10 +1508,15 @@ sets a session cookie. The dashboard client uses the same endpoints.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/dashboard` | full bundle + users + devices + usage snapshot |
-| GET/POST/PATCH/DELETE | `/api/users` & `/api/users/{id}` | list / create / update / delete users (allowance, block, speed caps; `exempt_quota: true` lifts the quota gate — the user is never quota-blocked, manual admin cuts still apply). **DELETE blacklists every device MAC it owns** (permanent deny list — see the quota-model section) |
+| GET/POST/PATCH/DELETE | `/api/users` & `/api/users/{id}` | list / create / update / delete users (allowance, block, speed caps; `exempt_quota: true` lifts the quota gate — the user is never quota-blocked, manual admin cuts still apply). **DELETE `?blacklist=true` blacklists every device MAC it owns** (permanent deny list — see the quota-model section), while `?blacklist=false` kicks them for 5s without blacklist |
+| POST | `/api/users/{id}/kick` | kick/disconnect all devices owned by user for 5s (flushes lease & drops state; device can reconnect) |
+| POST | `/api/users/{id}/block-blacklist` | permanently block and blacklist all device MACs owned by user |
 | POST | `/api/users/{id}/topup` | add GB to a user's allowance, clears their quota block |
-| GET/POST/PATCH/DELETE | `/api/devices` & `/api/devices/{id}` | list / create / update / delete devices (user, quota, bypass, speed caps). **DELETE blacklists the device's MAC** (permanent deny list — see the quota-model section) |
+| GET/POST/PATCH/DELETE | `/api/devices` & `/api/devices/{id}` | list / create / update / delete devices (user, quota, bypass, speed caps). **DELETE `?blacklist=true` blacklists the device's MAC** (permanent deny list — see the quota-model section), while `?blacklist=false` kicks device for 5s without blacklist |
+| POST | `/api/devices/{id}/kick` | kick/disconnect device for 5s (flushes lease & drops state; device can reconnect) |
+| POST | `/api/devices/{id}/block-blacklist` | permanently block and blacklist the device's MAC |
 | POST | `/api/devices/{id}/topup` | add GB to a device, clears its quota block |
+| POST | `/api/admin/spoof-consumption` | calibrate or test consumption for a user or device (`{"user_id" \| "device_id", "bytes"}`) |
 | GET | `/api/usage/{id}` · `/api/usage` | daily usage series per device / aggregated |
 | GET | `/api/events?limit=30` | audit events |
 | GET | `/api/logs?limit=300` | tail of the rotating log (newest first) |
@@ -1286,6 +1551,17 @@ sets a session cookie. The dashboard client uses the same endpoints.
 | GET | `/api/security/tls` | check whether HTTPS is currently enforced (TLS certs present + secure_cookies enabled); read-only |
 | POST | `/api/security/enforce-https` | one-click HTTPS: generate self-signed cert, write to disk, update config.yaml (tls_certfile + tls_keyfile + secure_cookies: true), schedule service restart. Config path is resolved from the running topology manager (not the project root). Returns cert paths + user-facing message |
 | POST | `/api/security/remove-https` | rollback HTTPS: delete cert files, clear TLS settings from config.yaml, set secure_cookies: false, schedule restart. Same config path resolution as enforce-https. Returns deleted files + message |
+| GET | `/api/vpn/status` | live sing-box status (state, uptime, speeds, session traffic, active connections, clients) |
+| POST | `/api/vpn/connect` | connect to a VPN node by id (`{"node_id": int}`), updates DB persistence and policy routing |
+| POST | `/api/vpn/disconnect` | disconnect active VPN tunnel, restore default routing |
+| GET/POST | `/api/vpn/nodes` | list saved VPN nodes / create node from link (`{"name": "...", "raw": "..."}`) |
+| PATCH/DELETE | `/api/vpn/nodes/{id}` | update node name or proxy outbound parameters / delete node |
+| POST | `/api/vpn/nodes/{id}/ping` | measure TCP handshake latency to remote proxy server |
+| GET/POST | `/api/vpn/routing` | fetch / update per-user or per-device VPN policy routing rule (`{"target_type", "target_id", "route_vpn"}`) |
+| GET/POST | `/api/vpn/settings` | read / update global VPN settings (`{"allow_insecure": bool}`) |
+| GET | `/api/vpn/logs?limit=150` | tail of in-memory sing-box process log ring buffer |
+| GET/POST | `/api/wan/telegram` | read / save Telegram WAN IP change notification trigger (`{"enabled", "bot_token", "chat_id"}`) |
+| POST | `/api/wan/telegram/test` | send immediate test notification to configured Telegram bot |
 | WS | `/ws` | pushes `{"type":"snapshot","data":{...}}` every 5 s |
 
 Interactive docs: `http://<gateway-ip>:8080/api/docs` (Swagger UI) — OFF by
@@ -1318,7 +1594,8 @@ QuotaManager/
 │   ├── topology.sh           # runtime LAN/WAN applier (panel-invoked, env-fed)
 │   ├── test_pppoe.sh         # throwaway PPPoE dial — test creds, no config change
 │   ├── update_oui.py         # regenerate quota/oui.txt from the IEEE registry
-│   └── replay_nft_startup.sh # replay the engine's startup nft command sequence (debug)
+│   ├── replay_nft_startup.sh # replay the engine's startup nft command sequence (debug)
+│   └── quota-manager.openwrt # OpenWrt procd service script for low-power router daemon
 ├── core/
 │   ├── config.py             # config.yaml -> typed Config dataclasses
 │   ├── logging_setup.py      # non-blocking QueueHandler -> writer thread -> rotating file
@@ -1358,10 +1635,19 @@ QuotaManager/
 │   │                         #   monitor-capable spare card
 │   ├── dnslog.py             # DNS browsing history: dnsmasq query-log parser +
 │   │                         #   DnslogTailer thread (bounded queue) -> dns_history
+│   ├── history_analytics.py  # DNS query analytics, timeline, and domain aggregation
 │   ├── dns_rules.py          # DnsRuleManager: domain blacklist/allow/redirect rules,
 │   │                         #   blocklist presets, per-client DNS-server overrides,
 │   │                         #   resolve_domain_status (History-tab filter badges) —
 │   │                         #   generated dnsmasq config, no new service
+│   ├── vpn_manager.py        # VpnManager: sing-box process supervisor, Clash API (9090),
+│   │                         #   traffic metrics, policy routing, persistent auto-healing
+│   ├── vpn_parser.py         # parse_vpn_link (VLESS/VMess/Trojan/Shadowsocks/WireGuard),
+│   │                         #   sing-box config generator, validation via sing-box check
+│   ├── wan_telegram.py       # Telegram WAN IP change trigger: ppp0 / external probe,
+│   │                         #   token masking, Telegram HTML messaging, firewall check
+│   ├── startup_health.py     # startup self-heal: ensure NAT table, ip forwarding,
+│   │                         #   nftables.conf, DNS routing
 │   ├── topology.py           # WAN-topology detection: is ppp0 up (for the WAN tab)?
 │   │                         #   restart_pppoe() = public-IP renewal (v24)
 │   ├── updater.py            # self-update checks (Admin tab): version compare vs the
@@ -1402,6 +1688,9 @@ QuotaManager/
     ├── test_config.py        # typed config parsing (Linux settings)
     ├── test_netmgr.py        # TopologyManager WAN/LAN apply + rollback + PPPoE test
     ├── test_topology.py      # detect_ppp / check_internet probes (fake `ip`)
+    ├── test_vpn.py           # VpnManager, link parsing, config generation, and REST API
+    ├── test_wan_telegram.py  # WAN Telegram IP trigger, token masking, message formatting
+    ├── test_startup_health.py# startup self-heal (NAT table, sysctl forwarding, nftables config)
     ├── test_vpnshare.py      # VpnShareManager vs a fake `ip`: rule/route program,
     │                         #   peer.parse, pin, reconcile, teardown
     ├── test_tun2socks.py     # Tun2socksManager vs fakes: download+verify, proxy

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Quota Manager</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=59">
+    <link rel="stylesheet" href="/assets/styles.css?v=79">
   <script disable-devtool-auto src='/assets/detector.js'></script>
 </head>
 <body>
@@ -14,16 +14,31 @@
   <!-- LOGIN SCREEN -->
   <div id="login-screen" class="screen hidden">
     <div class="glass card login-card">
-      <h1 class="logo">Quota<span>Manager</span></h1>
-      <p class="subtitle">Internet Quota Management</p>
+      <div class="login-brand">
+        <div class="login-icon-ring">
+          <svg class="login-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="13" width="20" height="8" rx="2" ry="2"></rect>
+            <path d="M6 13V8a6 6 0 0 1 12 0v5"></path>
+            <line x1="12" y1="16" x2="12" y2="18"></line>
+          </svg>
+        </div>
+        <h1 class="login-portal-title">Admin <span>Portal</span></h1>
+      </div>
       <form id="login-form" autocomplete="off">
-        <label for="login-password">Admin password</label>
-        <input type="password" id="login-password" placeholder="••••••••" required>
+        <div class="login-input-wrap">
+          <input type="password" id="login-password" placeholder="Enter password" autocomplete="current-password" required autofocus>
+        </div>
         <label for="login-totp" id="login-totp-label" class="hidden">Authenticator code</label>
-        <input type="text" id="login-totp" inputmode="numeric" autocomplete="one-time-code" placeholder="000 000" class="hidden">
-        <button type="submit" class="btn primary" id="login-submit">Login</button>
+        <div class="login-input-wrap">
+          <input type="text" id="login-totp" inputmode="numeric" autocomplete="one-time-code" placeholder="000 000" class="hidden">
+        </div>
+        <button type="submit" class="btn primary login-btn" id="login-submit">Login</button>
         <p id="login-error" class="error hidden">Wrong password. Try again.</p>
       </form>
+      <div class="login-footer-status">
+        <span class="status-pulse-dot"></span>
+        <span>Gateway System Ready</span>
+      </div>
     </div>
   </div>
 
@@ -47,6 +62,7 @@
         <h1 class="logo">Quota<span>Manager</span></h1>
       </div>
       <nav class="side-nav" aria-label="Sections">
+        <div class="nav-indicator" id="nav-indicator"></div>
         <button class="nav-tab active" data-panel="management">
           <span class="nav-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>
           <span class="nav-label">Management</span>
@@ -75,7 +91,90 @@
           <span class="nav-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg></span>
           <span class="nav-label">Firewall</span>
         </button>
+        <button class="nav-tab" data-panel="vpn">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg></span>
+          <span class="nav-label">VPN</span>
+        </button>
       </nav>
+
+      <!-- COMPACT BUNDLE WIDGET — always visible from any tab -->
+      <div class="sidebar-bundle" id="sidebar-bundle">
+        <div class="sidebar-bundle-header">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-4 0v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>
+          <span>Monthly Bundle</span>
+        </div>
+        <div class="sidebar-bundle-ring-wrap">
+          <div class="svg-gauge-box" id="bundle-ring">
+            <svg class="gauge-svg" viewBox="0 0 190 90" preserveAspectRatio="xMidYMid meet">
+              <defs>
+                <linearGradient id="gauge-fill-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stop-color="#0284c7" />
+                  <stop offset="60%" stop-color="#38bdf8" />
+                  <stop offset="100%" stop-color="#00f2fe" />
+                </linearGradient>
+                <linearGradient id="gauge-redline-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stop-color="#fb7185" />
+                  <stop offset="100%" stop-color="#f43f5e" />
+                </linearGradient>
+                <!-- Segmented mask for Cyber Digital style -->
+                <mask id="gauge-seg-mask">
+                  <path d="M 31 82 A 64 64 0 0 1 159 82" fill="none" stroke="#ffffff" stroke-width="14" stroke-dasharray="7 3" stroke-linecap="butt" />
+                </mask>
+              </defs>
+
+              <!-- Track Background (clean, high-contrast) -->
+              <path class="gauge-track-bg" d="M 31 82 A 64 64 0 0 1 159 82" />
+              <!-- Safe Track Track (0-80%) -->
+              <path class="gauge-track-safe" d="M 31 82 A 64 64 0 0 1 146.8 44.4" />
+              <!-- Danger Track Track (80-100%) -->
+              <path class="gauge-track-danger" d="M 146.8 44.4 A 64 64 0 0 1 159 82" />
+
+              <!-- Active Animated Progress Path -->
+              <path id="gauge-svg-fill" class="gauge-fill-path" d="M 31 82 A 64 64 0 0 1 159 82" />
+
+              <!-- Needle (Pivot at 95, 82 - comfortably raised from text, length 40 staying within dial) -->
+              <g id="gauge-svg-needle-group" class="gauge-svg-needle-group">
+                <line x1="95" y1="82" x2="95" y2="42" class="gauge-svg-needle-beam" />
+                <circle cx="95" cy="82" r="5.5" class="gauge-svg-needle-pivot" />
+                <circle cx="95" cy="82" r="2.2" class="gauge-svg-needle-center" />
+              </g>
+            </svg>
+
+            <!-- Digital Readout Center (Cleanly separated below needle pivot) -->
+            <div class="gauge-digital-readout">
+              <span id="bundle-used" class="ring-big">0 GB</span>
+              <span class="ring-small">of <span id="bundle-total">0</span> GB</span>
+            </div>
+          </div>
+        </div>
+        <div class="sidebar-bundle-stats">
+          <div class="sidebar-stat col-half">
+            <span class="sidebar-stat-label">Remaining</span>
+            <span id="bundle-remaining" class="sidebar-stat-value accent">—</span>
+          </div>
+          <div class="sidebar-stat col-half">
+            <span class="sidebar-stat-label">Days left</span>
+            <span id="bundle-days" class="sidebar-stat-value">–</span>
+          </div>
+          <div class="sidebar-stat col-full period-stat">
+            <span class="sidebar-stat-label">Period</span>
+            <span id="bundle-period" class="sidebar-stat-value period-val">–</span>
+          </div>
+          <div class="sidebar-stat col-third">
+            <span class="sidebar-stat-label">Users</span>
+            <span id="bundle-users" class="sidebar-stat-value">0</span>
+          </div>
+          <div class="sidebar-stat col-third">
+            <span class="sidebar-stat-label">Devices</span>
+            <span id="bundle-devices" class="sidebar-stat-value">0</span>
+          </div>
+          <div class="sidebar-stat col-third">
+            <span class="sidebar-stat-label">Blocked</span>
+            <span id="bundle-blocked" class="sidebar-stat-value danger">0</span>
+          </div>
+        </div>
+      </div>
+
       <div class="sidebar-footer">
         <span id="net-status" class="net-status" title="Checking internet connection…">
           <span class="dot off"></span>
@@ -115,55 +214,36 @@
         <span id="security-banner-text"></span>
         <button type="button" id="security-banner-dismiss" class="btn ghost small" title="Dismiss">✕</button>
       </div>
-      <!-- MANAGEMENT: users & devices + bundle stats (first tab only) -->
+      <!-- SIDEBAR PANEL POPUP LOADER -->
+      <div id="panel-loading-popup" class="panel-loading-popup hidden" aria-live="polite" aria-label="Loading panel">
+        <div class="panel-loading-card">
+          <div class="panel-loading-spinner-wrap">
+            <div class="panel-loading-spinner"></div>
+            <div class="panel-loading-pulse"></div>
+            <div class="panel-loading-core">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="panel-loading-icon">
+                <circle cx="12" cy="12" r="9"/>
+                <path d="M12 3v3m0 12v3M3 12h3m12 0h3"/>
+              </svg>
+            </div>
+          </div>
+          <div class="panel-loading-text">
+            <span class="panel-loading-title" id="panel-loading-title">Loading...</span>
+            <span class="panel-loading-sub" id="panel-loading-sub">Fetching latest system state...</span>
+          </div>
+        </div>
+      </div>
+      <!-- MANAGEMENT: users & devices (bundle summary lives in sidebar) -->
       <section id="panel-management" class="nav-panel">
-        <!-- BUNDLE SUMMARY -->
-        <section class="bundle-card glass">
-          <div class="bundle-ring-wrap">
-            <div class="ring" id="bundle-ring">
-              <div class="ring-center">
-                <span id="bundle-used" class="ring-big">0 GB</span>
-                <span class="ring-small">used of <span id="bundle-total">0</span> GB</span>
-              </div>
-            </div>
-          </div>
-          <div class="bundle-stats">
-            <div class="stat">
-              <span class="stat-label">Remaining</span>
-              <span id="bundle-remaining" class="stat-value purple">0 GB</span>
-            </div>
-            <div class="stat">
-              <span class="stat-label">Period</span>
-              <span id="bundle-period" class="stat-value">–</span>
-            </div>
-            <div class="stat">
-              <span class="stat-label">Days left</span>
-              <span id="bundle-days" class="stat-value">–</span>
-            </div>
-            <div class="stat">
-              <span class="stat-label">Users</span>
-              <span id="bundle-users" class="stat-value">0</span>
-            </div>
-            <div class="stat">
-              <span class="stat-label">Devices</span>
-              <span id="bundle-devices" class="stat-value">0</span>
-            </div>
-            <div class="stat">
-              <span class="stat-label">Blocked</span>
-              <span id="bundle-blocked" class="stat-value warning">0</span>
-            </div>
-          </div>
-        </section>
-
         <section class="section">
           <div class="section-head" style="flex-wrap: wrap; gap: 10px;">
-              <h2>Users &amp; devices</h2>
-              <div class="head-actions" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                <select id="layout-toggle" class="btn ghost small" style="padding: 4px 10px; height: 32px; font-size: 0.8rem; background: transparent; border: 1px solid var(--border); color: var(--text);" title="Change Layout">
-                  <option value="masonry">Masonry (Columns)</option>
-                  <option value="grid">Grid (Fixed Rows)</option>
-                  <option value="list">List (Single Column)</option>
-                </select>
+            <h2>Users &amp; devices</h2>
+            <div class="head-actions" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+              <select id="layout-toggle" class="btn ghost small" style="padding: 4px 10px; height: 32px; font-size: 0.8rem; background: transparent; border: 1px solid var(--border); color: var(--text);" title="Change Layout">
+                <option value="masonry">Masonry (Columns)</option>
+                <option value="grid">Grid (Fixed Rows)</option>
+                <option value="list">List (Single Column)</option>
+              </select>
               <button id="add-user-btn" class="btn ghost small">＋ Add user</button>
               <button id="add-device-btn" class="btn primary small">＋ Add device</button>
             </div>
@@ -222,13 +302,34 @@
               </div>
             </form>
             <hr class="sep">
-            <h3>Bundle recharged</h3>
-            <p class="muted small">Bought more data mid-month? Add it here — every auto
-              user's share is recalculated without resetting the period.</p>
-            <div class="recharge-row">
-              <input type="number" id="set-recharge" min="0.1" step="any" placeholder="Added GB">
-              <button id="recharge-btn" class="btn primary small">Add</button>
+            <div class="section-head" style="align-items: center; justify-content: space-between; margin-bottom: 8px;">
+              <div>
+                <h3 style="margin: 0;">Add-on Packs</h3>
+                <p class="muted small" style="margin-top: 2px;">Active extra data packages (Bundle recharged queue). Base bundle is consumed first.</p>
+              </div>
+              <button type="button" id="open-recharge-modal-btn" class="btn primary small">＋ Add pack</button>
             </div>
+
+            <!-- Queue table -->
+            <div id="recharges-queue-container" style="margin-top: 8px;">
+              <div class="table-wrap" style="max-height: 240px; overflow-y: auto;">
+                <table class="table small" style="width: 100%;">
+                  <thead>
+                    <tr>
+                      <th>Target</th>
+                      <th>Remaining</th>
+                      <th>Type</th>
+                      <th>Expiry</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="recharges-queue-tbody">
+                    <tr><td colspan="5" class="muted small" style="text-align: center; padding: 10px;">No add-on packs in queue.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             <hr class="sep">
             <button id="reset-month-btn" class="btn warning small">Reset month now</button>
           </div>
@@ -237,12 +338,10 @@
           <div class="glass card settings-card">
             <div class="guest-head">
               <div>
-                <h3>Guest mode</h3>
-                <p class="muted small">Every new device that joins the network becomes
-                  a guest with its own small allowance. Guests survive disconnects and
-                  are deleted when the month resets.</p>
+                <h3>Guest mode (Admin Approval)</h3>
+                <p class="muted small">New guest devices join in a pending/blocked state. The admin can Accept (grant internet) or Reject them directly from the dashboard. Completely prevents MAC-spoofing bandwidth theft.</p>
               </div>
-              <label class="switch" title="Register new devices as guests">
+              <label class="switch" title="Enable Guest Mode with Admin Approval">
                 <input type="checkbox" id="guest-mode-toggle">
                 <span class="slider"></span>
               </label>
@@ -250,7 +349,7 @@
             <div class="settings-grid">
               <div class="field">
                 <label for="guest-quota">Guest quota (GB)</label>
-                <input type="number" id="guest-quota" min="0.1" step="any" value="1" title="Guest allowance in GB">
+                <input type="number" id="guest-quota" min="0.1" step="any" value="1" title="Guest allowance in GB upon approval">
                 <button id="guest-quota-btn" class="btn primary small">Set</button>
               </div>
               <div class="field">
@@ -258,11 +357,8 @@
                 <input type="number" id="guest-speed-limit" min="0" step="any" value="0" title="0 = unlimited; the default cap for every guest's aggregate bandwidth">
                 <button id="guest-speed-btn" class="btn primary small">Set</button>
               </div>
-              <div class="field">
-                <label for="guest-limit">Max guest accounts</label>
-                <input type="number" id="guest-limit" min="1" step="1" value="2" title="Max guest accounts (stops MAC-spoofing spam)">
-                <button id="guest-limit-btn" class="btn ghost small">Set</button>
-              </div>
+              <!-- Hidden backward-compatibility input for guest-limit tests -->
+              <input type="hidden" id="guest-limit" value="2">
             </div>
           </div>
 
@@ -299,30 +395,59 @@
               <p id="decline-random-msg" class="muted small hidden"></p>
             </div>
             <hr class="sep">
-            <div class="toggle-row">
+            <!-- MAC RULES -->
+            <div class="section-head" style="align-items: center; justify-content: space-between; margin-bottom: 8px;">
               <div class="toggle-info">
                 <span class="toggle-title">MAC whitelist / blacklist</span>
-                <p class="toggle-help">Allow-list MACs are never quota-blocked,
-                  whatever their usage. Deny-list MACs are always cut, even when
-                  their user is fine. Both apply to existing devices on the next
-                  tick — one MAC per line (or comma-separated).</p>
+                <p class="toggle-help">Allow-list MACs bypass quota limits; Deny-list MACs are permanently cut from internet access.</p>
               </div>
+              <button type="button" id="open-mac-rule-btn" class="btn primary small">＋ Add new MAC rule</button>
             </div>
-            <div class="mac-lists-grid">
-              <div class="field">
-                <label for="mac-allow-list">Allow list (never quota-blocked)</label>
-                <textarea id="mac-allow-list" rows="4"
-                  placeholder="aa:bb:cc:dd:ee:ff&#10;11:22:33:44:55:66"></textarea>
-              </div>
-              <div class="field">
-                <label for="mac-deny-list">Deny list (always blocked)</label>
-                <textarea id="mac-deny-list" rows="4"
-                  placeholder="aa:bb:cc:dd:ee:ff&#10;11:22:33:44:55:66"></textarea>
-              </div>
+            <div class="table-wrap" style="margin-top: 10px; max-height: 220px;">
+              <table class="history-table" id="mac-rules-table">
+                <thead>
+                  <tr>
+                    <th>MAC Address</th>
+                    <th>Device / Host</th>
+                    <th>Rule Type</th>
+                    <th class="num">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="mac-rules-tbody">
+                  <tr><td colspan="4" class="muted small" style="text-align: center; padding: 12px;">No MAC rules configured yet.</td></tr>
+                </tbody>
+              </table>
             </div>
-            <div class="field">
-              <button id="mac-lists-btn" class="btn primary small">Save MAC lists</button>
-              <p id="mac-lists-msg" class="muted small hidden"></p>
+            <!-- Hidden textareas & button preserved for backward-compatibility with tests / sync -->
+            <div class="hidden">
+              <textarea id="mac-allow-list"></textarea>
+              <textarea id="mac-deny-list"></textarea>
+              <button id="mac-lists-btn" type="button"></button>
+            </div>
+            <p id="mac-lists-msg" class="muted small hidden"></p>
+            <hr class="sep">
+            <!-- STATIC IP RESERVATIONS (DHCP) -->
+            <div class="section-head" style="align-items: center; justify-content: space-between; margin-bottom: 8px;">
+              <div class="toggle-info">
+                <span class="toggle-title">Static IP reservations (DHCP)</span>
+                <p class="toggle-help">Assign a fixed IP address to any managed device or specific MAC address via DHCP.</p>
+              </div>
+              <button type="button" id="open-static-lease-btn" class="btn primary small">＋ Add reservation</button>
+            </div>
+            <div class="table-wrap" style="margin-top: 10px; max-height: 240px;">
+              <table class="history-table" id="static-leases-table">
+                <thead>
+                  <tr>
+                    <th>Device / Host</th>
+                    <th>MAC address</th>
+                    <th>Static IP</th>
+                    <th class="num">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="static-leases-tbody">
+                  <tr><td colspan="4" class="muted small" style="text-align: center; padding: 12px;">No static reservations configured yet.</td></tr>
+                </tbody>
+              </table>
             </div>
             <hr class="sep">
             <div class="toggle-row">
@@ -349,20 +474,6 @@
               </div>
               <button id="shaping-save-btn" class="btn primary small">Save speed settings</button>
             </div>
-            <hr class="sep">
-            <div class="toggle-row">
-              <div class="toggle-info">
-                <span class="toggle-title">VPN share (TUN mode)</span>
-                <p class="toggle-help">Route all network traffic through the gateway\'s active VPN tunnel (TUN mode).</p>
-              </div>
-              <label class="switch" title="Share the box's VPN across all devices">
-                <input type="checkbox" id="vpn-toggle">
-                <span class="slider"></span>
-              </label>
-            </div>
-            <p id="vpn-status" class="vpn-status muted small">Checking…</p>
-            <p id="vpn-gw-hint" class="vpn-status muted small hidden"></p>
-            <p id="vpn-ts-hint" class="vpn-status muted small hidden"></p>
           </div>
         </div>
 
@@ -414,11 +525,6 @@
             <span id="np-capped" class="stat-value">0</span>
           </div>
           <ul id="np-devices" class="preview-list"></ul>
-          <hr class="sep">
-          <div class="stat">
-            <span class="stat-label">VPN share</span>
-            <span id="np-vpn" class="stat-value off">Off</span>
-          </div>
         </div>
         </div>
       </section>
@@ -426,114 +532,148 @@
       <!-- WAN: strong mode — the box dials PPPoE itself -->
       <section id="panel-wan" class="nav-panel hidden">
         <div class="two-col">
-        <div class="glass card settings-card">
-          <div id="wan-restart-banner" class="banner hidden"></div>
-          <h3>WAN mode</h3>
-            <p class="muted small">Protect internal network from upstream.</p>
-          <p class="muted small">Gateway dials PPPoE directly for maximum security. Router admin page remains accessible.</p>
-          <div class="guest-head">
-            <span class="muted small">Select mode and press <strong>Apply</strong> to automatically restart the gateway.</span>
-            <label class="switch" title="Desired mode: on = WAN (strong), off = LAN">
-              <input type="checkbox" id="wan-toggle">
-              <span class="slider"></span>
-            </label>
-          </div>
-          <div id="wan-creds" class="hidden">
-            <p class="muted small">PPPoE credentials for WAN mode — from your ISP
-              card or the router's WAN status page. Leave <em>WAN interface</em>
-              empty unless you use the two-NIC layout.</p>
-            <label for="wan-user">PPPoE username</label>
-            <input id="wan-user" type="text" autocomplete="username"
-                   placeholder="user@isp" spellcheck="false">
-            <label for="wan-pass">PPPoE password</label>
-            <input id="wan-pass" type="password" autocomplete="current-password"
-                   placeholder="••••••••">
-            <label for="wan-if">WAN interface <span class="muted small">(optional — two-NIC only)</span></label>
-            <input id="wan-if" type="text" placeholder="e.g. eth1" spellcheck="false">
-            <p class="muted small" style="margin-top:12px"><strong>Not sure the
-              credentials work?</strong> Test them first — a throwaway dial that
-              reports whether the ISP accepts them, without changing anything.</p>
-            <div class="btn-row">
-              <button id="wan-test-btn" class="btn" type="button">Test PPPoE connection</button>
-            </div>
-            <div id="wan-test-msg" class="test-msg"></div>
-            <div class="btn-row">
-              <button id="wan-apply-btn" class="btn primary" type="button">Apply now</button>
-              <button id="wan-revert-btn" class="btn" type="button">Revert to LAN</button>
-            </div>
-          </div>
-          <hr class="sep">
-          <h3>Guide — how to switch your router</h3>
-          <p class="muted small">How to switch:</p>
-          <ol class="guide">
-            <li><strong>Put the router in BRIDGE / MODEM mode</strong>.</li>
-            <li><strong>Enter PPPoE credentials</strong> above and click <strong>Apply now</strong>.</li>
-            <li><strong>Two-NIC fallback:</strong> Set AP mode, connect ONT to NIC1, AP to NIC2. Enter NIC2 name in WAN interface.</li>
-          </ol>
-          <hr class="sep">
-          <p class="muted small"><strong>Reverting:</strong> Press <strong>Revert to LAN</strong> and undo router bridge mode.</p>
-        </div>
-
-        <!-- WAN STATUS PREVIEW (right column) -->
-        <div class="glass card preview-card">
-          <h3>WAN status</h3>
-          <div class="stat">
-            <span class="stat-label">Topology</span>
-            <span id="wan-topology" class="stat-value">lan</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">Source</span>
-            <span id="wan-source" class="stat-value">config</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">ppp0</span>
-            <span id="wan-ppp0" class="stat-value off">n/a</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">Public IP</span>
-            <span id="wan-ppp-ip" class="stat-value">—</span>
-          </div>
-          <div class="stat">
-            <span class="stat-label">Last renewed</span>
-            <span id="wan-renew-last" class="stat-value">—</span>
-          </div>
-          <div class="btn-row" style="margin-top:4px">
-            <button id="wan-restart-btn" class="btn" type="button" disabled
-                    title="Restarts the PPPoE dial — internet drops for a few seconds while ppp0 re-dials. On most Egyptian lines the ISP hands the new session a fresh public IP.">Restart PPPoE — renew public IP</button>
-          </div>
-          <p id="wan-renew-disabled-note" class="muted small hidden">ppp0 is down —
-            renew is disabled (restarting the dial needs a working line).</p>
-          <hr class="sep">
-          <div class="renew-row">
+          <div class="glass card settings-card">
+            <div id="wan-restart-banner" class="banner hidden"></div>
+            <h3>WAN mode</h3>
+            <p class="muted small">Gateway dials PPPoE directly for maximum security. Router admin page remains accessible.</p>
             <div class="guest-head">
-              <span class="muted small"><strong>Auto-renew</strong> — the gateway
-                restarts the PPPoE dial on a schedule so the ISP hands out a fresh
-                public IP. Internet drops briefly each time (press <strong>Save</strong>
-                to apply).</span>
-              <label class="switch" title="Auto-renew the WAN public IP on a schedule">
-                <input type="checkbox" id="wan-renew-toggle" disabled>
+              <span class="muted small">Select mode and press <strong>Apply now</strong> to switch.</span>
+              <label class="switch" title="Desired mode: on = WAN (strong), off = LAN">
+                <input type="checkbox" id="wan-toggle">
                 <span class="slider"></span>
               </label>
             </div>
-            <div class="btn-row">
-              <label for="wan-renew-minutes" class="muted small" style="flex:0 0 auto;margin:0 8px 0 0">Renew every (min 5):</label>
-              <input id="wan-renew-minutes" type="number" min="5" step="1" value="15" disabled>
-              <button id="wan-renew-save" class="btn small" type="button" disabled>Save</button>
+            <div id="wan-creds" class="hidden">
+              <p class="muted small">PPPoE credentials for WAN mode (from your ISP contract). Leave <em>WAN interface</em> empty unless using dual-NIC.</p>
+              <label for="wan-user">PPPoE username</label>
+              <input id="wan-user" type="text" autocomplete="username"
+                     placeholder="user@isp" spellcheck="false">
+              <label for="wan-pass">PPPoE password</label>
+              <input id="wan-pass" type="password" autocomplete="current-password"
+                     placeholder="••••••••">
+              <label for="wan-if">WAN interface <span class="muted small">(optional — two-NIC only)</span></label>
+              <input id="wan-if" type="text" placeholder="e.g. eth1" spellcheck="false">
+              <p class="muted small" style="margin-top:10px">Test your credentials before applying without interrupting traffic.</p>
+              <div class="btn-row">
+                <button id="wan-test-btn" class="btn" type="button">Test PPPoE connection</button>
+              </div>
+              <div id="wan-test-msg" class="test-msg"></div>
+              <div class="btn-row">
+                <button id="wan-apply-btn" class="btn primary" type="button">Apply now</button>
+                <button id="wan-revert-btn" class="btn" type="button">Revert to LAN</button>
+              </div>
             </div>
-            <div id="wan-renew-msg" class="test-msg"></div>
+            <hr class="sep">
+            <h3>Guide — how to switch your router</h3>
+            <ol class="guide">
+              <li><strong>Put router in bridge mode</strong> (or AP mode).</li>
+              <li><strong>Enter PPPoE credentials</strong> above and click <strong>Apply now</strong>.</li>
+              <li><strong>Two-NIC fallback:</strong> ONT into NIC1, AP into NIC2. Specify NIC2 in WAN interface.</li>
+            </ol>
+            <hr class="sep">
+            <p class="muted small"><strong>Reverting:</strong> Press <strong>Revert to LAN</strong> and restore router settings.</p>
           </div>
-          <hr class="sep">
-          <p class="muted small">ppp0 state is read live on the gateway every 15 s.
-            In LAN mode it reads n/a — ppp0 only exists when the box dials the
-            line itself. Internet reachability shows in the top bar.</p>
-          <div id="wan-apply-msg" class="muted small apply-msg"></div>
-        </div>
+
+          <!-- RIGHT COLUMN: WAN status preview + Telegram trigger -->
+          <div style="display: flex; flex-direction: column; gap: 20px;">
+            <div class="glass card">
+              <h3>WAN status</h3>
+              <div class="stat">
+                <span class="stat-label">Topology</span>
+                <span id="wan-topology" class="stat-value">lan</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Source</span>
+                <span id="wan-source" class="stat-value">config</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">ppp0</span>
+                <span id="wan-ppp0" class="stat-value off">n/a</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Public IP</span>
+                <span id="wan-ppp-ip" class="stat-value">—</span>
+              </div>
+              <div class="stat">
+                <span class="stat-label">Last renewed</span>
+                <span id="wan-renew-last" class="stat-value">—</span>
+              </div>
+              <div class="btn-row" style="margin-top:4px">
+                <button id="wan-restart-btn" class="btn" type="button" disabled
+                        title="Restarts the PPPoE dial — internet drops for a few seconds while ppp0 re-dials. On most Egyptian lines the ISP hands the new session a fresh public IP.">Restart PPPoE — renew public IP</button>
+              </div>
+              <p id="wan-renew-disabled-note" class="muted small hidden">ppp0 is down — renew is disabled (restarting dial requires active line).</p>
+              <hr class="sep">
+              <div class="renew-row">
+                <div class="guest-head">
+                  <span class="muted small"><strong>Auto-renew</strong> — periodically restart dial to obtain fresh public IP.</span>
+                  <label class="switch" title="Auto-renew the WAN public IP on a schedule">
+                    <input type="checkbox" id="wan-renew-toggle" disabled>
+                    <span class="slider"></span>
+                  </label>
+                </div>
+                <div class="btn-row">
+                  <label for="wan-renew-minutes" class="muted small" style="flex:0 0 auto;margin:0 8px 0 0">Renew every (min 5):</label>
+                  <input id="wan-renew-minutes" type="number" min="5" step="1" value="15" disabled>
+                  <button id="wan-renew-save" class="btn small" type="button" disabled>Save</button>
+                </div>
+                <div id="wan-renew-msg" class="test-msg"></div>
+              </div>
+              <hr class="sep">
+              <p class="muted small">ppp0 state is read live every 15 s. In LAN mode it reads n/a.</p>
+              <div id="wan-apply-msg" class="muted small apply-msg"></div>
+            </div>
+
+            <!-- TELEGRAM BOT WAN IP TRIGGER -->
+            <div class="glass card">
+              <div class="section-head">
+                <div>
+                  <h3 style="margin: 0;">Telegram WAN IP Trigger</h3>
+                  <p class="muted small" style="margin-top: 2px;">Notifies your Telegram bot with new Public IP whenever it changes.</p>
+                </div>
+                <label class="switch" title="Enable Telegram notification trigger on WAN IP changes">
+                  <input type="checkbox" id="wan-tg-toggle">
+                  <span class="slider"></span>
+                </label>
+              </div>
+
+              <div id="wan-tg-body" style="margin-top: 14px;">
+                <div style="display: flex; flex-direction: column; gap: 12px;">
+                  <div>
+                    <label for="wan-tg-token" style="margin-top: 0;">Bot Token</label>
+                    <input id="wan-tg-token" type="password" placeholder="123456789:ABCdef..." autocomplete="off">
+                  </div>
+                  <div>
+                    <label for="wan-tg-chat" style="margin-top: 0;">Chat ID</label>
+                    <input id="wan-tg-chat" type="text" placeholder="e.g. 123456789">
+                  </div>
+                </div>
+
+                <!-- REMOTE FIREWALL ACCESS STATUS BANNER -->
+                <div id="wan-tg-firewall-banner" class="banner info" style="margin-top: 14px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span id="wan-tg-fw-icon"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+                    <span id="wan-tg-fw-text" class="small">Checking remote firewall access status…</span>
+                  </div>
+                  <button type="button" id="wan-tg-fw-link" class="btn ghost tiny" style="color: #38bdf8;">Configure in Firewall Tab →</button>
+                </div>
+
+                <div style="display: flex; justify-content: flex-end; align-items: center; margin-top: 14px;">
+                  <div class="btn-row" style="margin: 0;">
+                    <button type="button" id="wan-tg-test-btn" class="btn ghost small"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Send Test</button>
+                    <button type="button" id="wan-tg-save-btn" class="btn primary small">Save Trigger</button>
+                  </div>
+                </div>
+                <div id="wan-tg-msg" class="test-msg" style="margin-top: 10px;"></div>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
       <!-- FIREWALL: kernel firewall (inet quota_firewall) — mode-aware. -->
       <section id="panel-firewall" class="nav-panel hidden">
-        <div class="netquota-layout">
+        <div class="netquota-layout firewall-balanced-layout">
         <div class="netquota-config">
 
           <div class="glass card settings-card">
@@ -584,73 +724,16 @@
             </div>
           </div>
 
-          <!-- ALLOW / DENY CIDRs -->
-          <div class="glass card settings-card">
-            <h3>IP / CIDR lists</h3>
-            <div class="field">
-              <label for="fw-allow-cidrs">Allowlist (bypasses the WAN default-deny)</label>
-              <textarea id="fw-allow-cidrs" rows="2" placeholder="203.0.113.0/24, one per line"></textarea>
-            </div>
-            <div class="field">
-              <label for="fw-deny-cidrs">Blocklist (deny &gt; allow)</label>
-              <textarea id="fw-deny-cidrs" rows="2" placeholder="198.51.100.0/24, one per line"></textarea>
-            </div>
-          </div>
-
-          <!-- PROTECTION TOGGLES -->
-          <div class="glass card settings-card">
-            <h3>Protection</h3>
-            <div class="settings-grid">
-              <div class="field">
-                <label for="fw-syn-rate">SYN-flood rate (per second)</label>
-                <input type="number" id="fw-syn-rate" min="1" value="10">
-              </div>
-              <div class="field">
-                <label for="fw-syn-burst">SYN-flood burst</label>
-                <input type="number" id="fw-syn-burst" min="1" value="20">
-              </div>
-              <div class="field">
-                <label for="fw-bf-threshold">Brute-force threshold (logins)</label>
-                <input type="number" id="fw-bf-threshold" min="1" value="10">
-              </div>
-              <div class="field">
-                <label for="fw-bf-seconds">Brute-force ban (seconds)</label>
-                <input type="number" id="fw-bf-seconds" min="60" value="1800">
-              </div>
-              <div class="field">
-                <label for="fw-scan-threshold">Port-scan SYN threshold</label>
-                <input type="number" id="fw-scan-threshold" min="1" value="200">
-              </div>
-              <div class="field">
-                <label for="fw-scan-seconds">Port-scan ban (seconds)</label>
-                <input type="number" id="fw-scan-seconds" min="60" value="3600">
-              </div>
-            </div>
-            <div class="fw-toggle-row">
-              <label class="switch-row" for="fw-scan-enabled">
-                <span>Port-scan detection</span>
-                <span class="switch"><input type="checkbox" id="fw-scan-enabled" checked><span class="slider"></span></span>
-              </label>
-              <label class="switch-row" for="fw-geo">
-                <span>Geo-block (uses the stored country→CIDR map)</span>
-                <span class="switch"><input type="checkbox" id="fw-geo"><span class="slider"></span></span>
-              </label>
-              <label class="switch-row" for="fw-wan-confirmed">
-                <span>Expose dashboard on ppp0 in WAN mode <em>(explicit, risky)</em></span>
-                <span class="switch"><input type="checkbox" id="fw-wan-confirmed"><span class="slider"></span></span>
-              </label>
-            </div>
-          </div>
-
+          <!-- ENFORCE HTTPS -->
           <div class="glass card settings-card fw-https-card" id="fw-https-card">
             <div class="fw-https-row">
               <div class="fw-https-info">
                 <h3>Enforce HTTPS</h3>
-                <p class="muted small">Generate a self-signed TLS certificate and enable encrypted dashboard access in one click. The browser will show a one-time warning you accept — after that the connection is encrypted and the WAN-over-HTTP warning disappears.</p>
+                <p class="muted small">Generate self-signed TLS cert for encrypted dashboard access.</p>
               </div>
               <div class="fw-https-btns">
-                <button id="fw-enforce-https" class="btn primary" type="button">Enable HTTPS</button>
-                <button id="fw-remove-https" class="btn ghost danger hidden" type="button">Remove HTTPS</button>
+                <button id="fw-enforce-https" class="btn primary small" type="button">Enable HTTPS</button>
+                <button id="fw-remove-https" class="btn ghost danger small hidden" type="button">Remove</button>
               </div>
             </div>
             <div id="fw-https-status" class="muted small fw-https-status hidden"></div>
@@ -668,7 +751,7 @@
             </div>
           </div>
 
-          <div class="btn-row">
+          <div class="btn-row" style="margin-top: 6px;">
             <button id="fw-apply" class="btn primary" type="button">Apply firewall</button>
             <button id="fw-revert" class="btn ghost" type="button">Revert to last-good</button>
             <span id="fw-msg" class="muted small apply-msg"></span>
@@ -676,8 +759,67 @@
           <div id="fw-warnings" class="fw-warnings"></div>
         </div>
 
-        <!-- RIGHT COLUMN: bans + log -->
+        <!-- RIGHT COLUMN: Protection, IP Lists, Active Bans & Firewall Log -->
         <div class="netquota-side">
+          <!-- PROTECTION TOGGLES -->
+          <div class="glass card settings-card">
+            <h3>Protection &amp; Flood Limits</h3>
+            <div class="settings-grid">
+              <div class="field">
+                <label for="fw-syn-rate">SYN-flood rate (/s)</label>
+                <input type="number" id="fw-syn-rate" min="1" value="10">
+              </div>
+              <div class="field">
+                <label for="fw-syn-burst">SYN-flood burst</label>
+                <input type="number" id="fw-syn-burst" min="1" value="20">
+              </div>
+              <div class="field">
+                <label for="fw-bf-threshold">Brute-force (logins)</label>
+                <input type="number" id="fw-bf-threshold" min="1" value="10">
+              </div>
+              <div class="field">
+                <label for="fw-bf-seconds">Brute-force ban (s)</label>
+                <input type="number" id="fw-bf-seconds" min="60" value="1800">
+              </div>
+              <div class="field">
+                <label for="fw-scan-threshold">Port-scan SYN threshold</label>
+                <input type="number" id="fw-scan-threshold" min="1" value="200">
+              </div>
+              <div class="field">
+                <label for="fw-scan-seconds">Port-scan ban (s)</label>
+                <input type="number" id="fw-scan-seconds" min="60" value="3600">
+              </div>
+            </div>
+            <div class="fw-toggle-row">
+              <label class="switch-row" for="fw-scan-enabled">
+                <span>Port-scan detection</span>
+                <span class="switch"><input type="checkbox" id="fw-scan-enabled" checked><span class="slider"></span></span>
+              </label>
+              <label class="switch-row" for="fw-geo">
+                <span>Geo-block (stored country→CIDR)</span>
+                <span class="switch"><input type="checkbox" id="fw-geo"><span class="slider"></span></span>
+              </label>
+              <label class="switch-row" for="fw-wan-confirmed">
+                <span>Expose dashboard on ppp0 in WAN mode <em>(risky)</em></span>
+                <span class="switch"><input type="checkbox" id="fw-wan-confirmed"><span class="slider"></span></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- ALLOW / DENY CIDRs -->
+          <div class="glass card settings-card">
+            <h3>IP / CIDR lists</h3>
+            <div class="field">
+              <label for="fw-allow-cidrs">Allowlist (bypasses the WAN default-deny)</label>
+              <textarea id="fw-allow-cidrs" rows="2" placeholder="203.0.113.0/24, one per line"></textarea>
+            </div>
+            <div class="field">
+              <label for="fw-deny-cidrs">Blocklist (deny &gt; allow)</label>
+              <textarea id="fw-deny-cidrs" rows="2" placeholder="198.51.100.0/24, one per line"></textarea>
+            </div>
+          </div>
+
+          <!-- ACTIVE BANS -->
           <div class="glass card settings-card">
             <h3>Active bans</h3>
             <div id="fw-bans" class="fw-ban-list">
@@ -688,6 +830,8 @@
               <button id="fw-ban-btn" class="btn small" type="button">Ban</button>
             </div>
           </div>
+
+          <!-- FIREWALL LOG -->
           <div class="glass card settings-card">
             <h3>Firewall log</h3>
             <p class="muted small">Recent firewall events.</p>
@@ -697,47 +841,40 @@
         </div>
       </section>
 
-      <!-- ADMIN: security & credentials + system info in a top 2-column grid,
-           with the full System Logs console embedded below (full width). -->
+      <!-- ADMIN: unified single frame with Security, System Info, Updates and System Logs separated cleanly -->
       <section id="panel-admin" class="nav-panel hidden">
         <div class="admin-layout">
-
           <div class="admin-grid">
             <!-- SECURITY & CREDENTIALS -->
             <div class="glass card">
               <h3>Security</h3>
-            <p class="muted small">Manage your password.</p>
-              <a id="password-link" class="link">Change password</a>
-              <span class="link-sep">·</span>
-              <a id="totp-link" class="link">Two-factor (TOTP)</a>
-              <span id="totp-state" class="muted small"></span>
-            </div>
-
-            <!-- SYSTEM INFO & ABOUT -->
-            <div class="glass card">
-              <h3>System Info &amp; About</h3>
+              <p class="muted small">Manage your password and authentication.</p>
+              <div style="margin-top: 14px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                <a id="password-link" class="btn ghost small" style="margin-top: 0;">Change password</a>
+                <a id="totp-link" class="btn ghost small" style="margin-top: 0;">Two-factor (TOTP)</a>
+                <span id="totp-state" class="muted small"></span>
+              </div>
+              <hr class="sep" style="margin: 18px 0 14px 0;">
+              <h4 style="font-size: 0.88rem; color: var(--text-dim); margin-bottom: 6px;">System Info &amp; About</h4>
               <div class="about-row">
                 <span class="muted">Version</span>
                 <span id="app-version" class="about-value">—</span>
               </div>
-              <hr class="sep">
-              <p class="muted small">Metered-internet quota gateway. Split your monthly
-                allowance fairly between users and devices, cap speeds, and keep game
-                ping low under load.</p>
+              <p class="muted small" style="margin-top: 8px; line-height: 1.45;">Metered-internet quota gateway. Split allowance fairly between users and devices, cap speeds, and keep latency low under load.</p>
             </div>
 
             <!-- SOFTWARE UPDATES -->
             <div class="glass card updates-card">
               <h3>Updates</h3>
-            <p class="muted small">System software updates.</p>
+              <p class="muted small">System software updates &amp; automated checks.</p>
               <div class="updates-grid">
                 <div class="about-row">
                   <span class="muted">Current</span>
-                  <span id="upd-current" class="about-value">—</span>
+                  <span id="upd-current" class="about-value font-mono">—</span>
                 </div>
                 <div class="about-row">
                   <span class="muted">Latest</span>
-                  <span id="upd-latest" class="about-value">—</span>
+                  <span id="upd-latest" class="about-value font-mono">—</span>
                 </div>
                 <div class="about-row">
                   <span class="muted">Last check</span>
@@ -748,26 +885,200 @@
                   <span id="upd-status" class="about-value">—</span>
                 </div>
               </div>
-              <div class="updates-actions">
+              <div class="updates-actions" style="margin-top: 12px;">
                 <button type="button" id="upd-check" class="btn ghost small">Check now</button>
                 <button type="button" id="upd-install" class="btn primary small hidden">Install</button>
                 <button type="button" id="upd-details" class="btn ghost small hidden">Show details</button>
               </div>
-              <hr class="sep">
-              <label class="check" title="Check GitHub for a newer release every 24 h and notify the dashboard.">
-                <input type="checkbox" id="upd-enabled" checked>
-                <span>Check for updates automatically (every 24 h)</span>
-              </label>
-              <label class="check" title="When an update is found, download + install it automatically (the gateway restarts into the new version).">
-                <input type="checkbox" id="upd-auto">
-                <span>Auto-install when an update is available</span>
-              </label>
-              <p id="upd-error" class="muted small hidden"></p>
+              <hr class="sep" style="margin: 14px 0;">
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+                <label class="check" title="Check GitHub for a newer release every 24 h and notify the dashboard." style="margin-top: 0;">
+                  <input type="checkbox" id="upd-enabled" checked>
+                  <span>Check for updates automatically (every 24 h)</span>
+                </label>
+                <label class="check" title="When an update is found, download + install it automatically (the gateway restarts into the new version)." style="margin-top: 0;">
+                  <input type="checkbox" id="upd-auto">
+                  <span>Auto-install when an update is available</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- THEMES & APPEARANCE -->
+            <div class="glass card themes-card" style="grid-column: 1 / -1;">
+              <div class="section-head" style="margin-bottom: 6px;">
+                <div>
+                  <h3 style="margin: 0;">Themes &amp; Appearance</h3>
+                  <p class="muted small" style="margin-top: 4px;">Choose a curated, high-contrast glowing palette. Applies instantly across all system pages.</p>
+                </div>
+              </div>
+              <div class="theme-grid" id="theme-grid">
+                <!-- Obsidian Cobalt (Default) -->
+                <div class="theme-option active" data-set-theme="default">
+                  <div class="theme-preview-dots">
+                    <span class="theme-color-dot" style="background: #38bdf8; color: #38bdf8;"></span>
+                    <span class="theme-color-dot" style="background: #2563eb; color: #2563eb;"></span>
+                  </div>
+                  <div class="theme-info">
+                    <span class="theme-name">Cobalt Obsidian</span>
+                    <span class="theme-desc">Default Midnight &amp; Sky</span>
+                  </div>
+                </div>
+
+                <!-- Cyber Emerald -->
+                <div class="theme-option" data-set-theme="emerald">
+                  <div class="theme-preview-dots">
+                    <span class="theme-color-dot" style="background: #10b981; color: #10b981;"></span>
+                    <span class="theme-color-dot" style="background: #34d399; color: #34d399;"></span>
+                  </div>
+                  <div class="theme-info">
+                    <span class="theme-name">Cyber Emerald</span>
+                    <span class="theme-desc">Matrix Deep Mint Glow</span>
+                  </div>
+                </div>
+
+                <!-- Tokyo Violet -->
+                <div class="theme-option" data-set-theme="violet">
+                  <div class="theme-preview-dots">
+                    <span class="theme-color-dot" style="background: #a855f7; color: #a855f7;"></span>
+                    <span class="theme-color-dot" style="background: #c084fc; color: #c084fc;"></span>
+                  </div>
+                  <div class="theme-info">
+                    <span class="theme-name">Tokyo Violet</span>
+                    <span class="theme-desc">Synthwave Neon Purple</span>
+                  </div>
+                </div>
+
+                <!-- Sunset Crimson -->
+                <div class="theme-option" data-set-theme="crimson">
+                  <div class="theme-preview-dots">
+                    <span class="theme-color-dot" style="background: #f43f5e; color: #f43f5e;"></span>
+                    <span class="theme-color-dot" style="background: #fb7185; color: #fb7185;"></span>
+                  </div>
+                  <div class="theme-info">
+                    <span class="theme-name">Sunset Crimson</span>
+                    <span class="theme-desc">Vibrant Rose &amp; Scarlet</span>
+                  </div>
+                </div>
+
+                <!-- Solar Amber -->
+                <div class="theme-option" data-set-theme="amber">
+                  <div class="theme-preview-dots">
+                    <span class="theme-color-dot" style="background: #f59e0b; color: #f59e0b;"></span>
+                    <span class="theme-color-dot" style="background: #fbbf24; color: #fbbf24;"></span>
+                  </div>
+                  <div class="theme-info">
+                    <span class="theme-name">Solar Amber</span>
+                    <span class="theme-desc">Warm Honey &amp; Gold</span>
+                  </div>
+                </div>
+
+                <!-- Nord Cyan -->
+                <div class="theme-option" data-set-theme="nord">
+                  <div class="theme-preview-dots">
+                    <span class="theme-color-dot" style="background: #2dd4bf; color: #2dd4bf;"></span>
+                    <span class="theme-color-dot" style="background: #5eead4; color: #5eead4;"></span>
+                  </div>
+                  <div class="theme-info">
+                    <span class="theme-name">Nord Cyan</span>
+                    <span class="theme-desc">Arctic Deep Teal Glow</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="particle-theme-section">
+                <div class="section-head" style="margin-bottom: 6px; margin-top: 18px;">
+                  <div>
+                    <h4 style="margin: 0; font-size: 0.95rem;">Background Particle FX</h4>
+                    <p class="muted small" style="margin-top: 2px;">Dynamic animated canvas effects drifting across the interface.</p>
+                  </div>
+                </div>
+                <div class="particle-grid" id="particle-grid">
+                  <button type="button" class="particle-option active" data-particle-style="mesh">
+                    <span class="particle-badge-icon">🕸️</span>
+                    <div class="particle-info">
+                      <span class="particle-name">Network Mesh</span>
+                      <span class="particle-desc">Connected constellation node web</span>
+                    </div>
+                  </button>
+                  <button type="button" class="particle-option" data-particle-style="dust">
+                    <span class="particle-badge-icon">✨</span>
+                    <div class="particle-info">
+                      <span class="particle-name">Cosmic Dust</span>
+                      <span class="particle-desc">Glowing embers floating upward</span>
+                    </div>
+                  </button>
+                  <button type="button" class="particle-option" data-particle-style="rain">
+                    <span class="particle-badge-icon">⚡</span>
+                    <div class="particle-info">
+                      <span class="particle-name">Digital Rain</span>
+                      <span class="particle-desc">High-speed cyber data streams</span>
+                    </div>
+                  </button>
+                  <button type="button" class="particle-option" data-particle-style="orbs">
+                    <span class="particle-badge-icon">🔮</span>
+                    <div class="particle-info">
+                      <span class="particle-name">Floating Orbs</span>
+                      <span class="particle-desc">Soft pulsing ethereal bokeh</span>
+                    </div>
+                  </button>
+                  <button type="button" class="particle-option" data-particle-style="off">
+                    <span class="particle-badge-icon">🚫</span>
+                    <div class="particle-info">
+                      <span class="particle-name">Disabled</span>
+                      <span class="particle-desc">Clean static background</span>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Speedometer Gauge Style Selector (4 Distinct Designs) -->
+              <div class="gauge-theme-section">
+                <div class="section-head" style="margin-bottom: 6px; margin-top: 18px;">
+                  <div>
+                    <h4 style="margin: 0; font-size: 0.95rem;">Speedometer Gauge Style</h4>
+                    <p class="muted small" style="margin-top: 2px;">Choose your preferred monthly bundle gauge design.</p>
+                  </div>
+                </div>
+                <div class="gauge-grid" id="gauge-grid">
+                  <!-- Style 1: Sports Needle Tachometer -->
+                  <button type="button" class="gauge-option active" data-gauge-style="needle">
+                    <div class="gauge-badge-preview needle">
+                      <span class="preview-needle"></span>
+                    </div>
+                    <div class="gauge-info">
+                      <span class="gauge-name">1. Sports Needle</span>
+                      <span class="gauge-desc">Real rotating precision needle, tick notches &amp; redline</span>
+                    </div>
+                  </button>
+
+                  <!-- Style 2: Digital LED Segment Blocks -->
+                  <button type="button" class="gauge-option" data-gauge-style="segmented">
+                    <div class="gauge-badge-preview segmented">
+                      <span class="preview-seg"></span>
+                    </div>
+                    <div class="gauge-info">
+                      <span class="gauge-name">2. Digital Segmented LED</span>
+                      <span class="gauge-desc">Illuminated digital dash blocks &amp; warning redline</span>
+                    </div>
+                  </button>
+
+                  <!-- Style 3: Electric Horizon Curve -->
+                  <button type="button" class="gauge-option" data-gauge-style="minimal">
+                    <div class="gauge-badge-preview minimal">
+                      <span class="preview-clean"></span>
+                    </div>
+                    <div class="gauge-info">
+                      <span class="gauge-name">3. Electric Horizon Arc</span>
+                      <span class="gauge-desc">Tesla-style pure glowing cyan curve with scarlet zone</span>
+                    </div>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
           <!-- SYSTEM LOGS -->
-          <div class="glass card logs-card admin-logs-card">
+          <div class="glass card admin-logs-card">
             <div class="logs-head">
               <h3>System Logs</h3>
               <div class="logs-toolbar">
@@ -784,7 +1095,6 @@
             </div>
             <pre id="logs-view" class="logs"></pre>
           </div>
-
         </div>
       </section>
 
@@ -792,7 +1102,10 @@
       <section id="panel-history" class="nav-panel hidden">
         <div class="glass card logs-card">
           <div class="logs-head">
-            <h3>Browsing history</h3>
+            <div>
+              <h3>Browsing history &amp; Visual Analytics</h3>
+              <p class="muted small" style="margin: 2px 0 0 0;">Visual monitor of network activity, top apps, and visited websites.</p>
+            </div>
             <div class="logs-toolbar">
               <select id="hist-device" title="Device to inspect" aria-label="Device">
                 <option value="all" selected>All devices</option>
@@ -806,9 +1119,61 @@
               <button type="button" id="hist-refresh" class="btn ghost small" title="Reload history">⟳ Refresh</button>
             </div>
           </div>
+
+          <!-- SUMMARY STATS TILES -->
+          <div class="hist-stat-cards" id="hist-stat-cards">
+            <div class="hist-stat-tile glass">
+              <span class="hist-stat-label">Total Queries</span>
+              <span class="hist-stat-value" id="hist-total-queries">0</span>
+            </div>
+            <div class="hist-stat-tile glass">
+              <span class="hist-stat-label">Top Application</span>
+              <span class="hist-stat-value text-accent" id="hist-top-app">—</span>
+            </div>
+            <div class="hist-stat-tile glass">
+              <span class="hist-stat-label">Top Website</span>
+              <span class="hist-stat-value" id="hist-top-web">—</span>
+            </div>
+            <div class="hist-stat-tile glass">
+              <span class="hist-stat-label">Unique Domains</span>
+              <span class="hist-stat-value" id="hist-domains-count">0</span>
+            </div>
+          </div>
+
+          <!-- VIEW TABS -->
+          <div class="hist-view-tabs" role="tablist">
+            <button type="button" class="hist-tab active" data-view="apps"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg> Top Apps &amp; Platforms</button>
+            <button type="button" class="hist-tab" data-view="websites"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> Top Websites</button>
+            <button type="button" class="hist-tab" data-view="timeline"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Activity Timeline</button>
+            <button type="button" class="hist-tab" data-view="raw"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg> Raw Query Log</button>
+          </div>
+
           <p id="hist-summary" class="muted small hidden"></p>
-          <div id="hist-empty" class="muted small hidden"></div>
-          <div id="hist-body" class="hidden">
+          <div id="hist-loading" class="hist-loading-state hidden">
+            <div class="hist-spinner"></div>
+            <span>Loading browsing history &amp; visual analytics...</span>
+          </div>
+          <div id="hist-empty" class="muted small hidden" style="text-align: center; padding: 24px;">No browsing activity recorded in this lookback window.</div>
+
+          <!-- APPS VIEW -->
+          <div id="hist-view-apps" class="hist-view">
+            <div id="hist-apps-list" class="hist-bars-list"></div>
+          </div>
+
+          <!-- WEBSITES VIEW -->
+          <div id="hist-view-websites" class="hist-view hidden">
+            <div id="hist-websites-list" class="hist-bars-list"></div>
+          </div>
+
+          <!-- TIMELINE VIEW -->
+          <div id="hist-view-timeline" class="hist-view hidden">
+            <div class="hist-timeline-chart-wrap">
+              <div id="hist-timeline-chart" class="hist-timeline-chart"></div>
+            </div>
+          </div>
+
+          <!-- RAW VIEW -->
+          <div id="hist-view-raw" class="hist-view hidden">
             <div class="table-wrap">
               <table class="history-table">
                 <thead>
@@ -817,7 +1182,7 @@
                 <tbody id="hist-top"></tbody>
               </table>
             </div>
-            <div class="hist-cols">
+            <div class="hist-cols" style="margin-top: 14px;">
               <div>
                 <h4>Activity</h4>
                 <ul id="hist-activity" class="activity-list"></ul>
@@ -834,11 +1199,71 @@
       <!-- DNS: domain blacklist/allow/redirect rules, blocklist presets, -->
       <!-- import, and per-user/per-device upstream DNS-server overrides. -->
       <section id="panel-dns" class="nav-panel hidden">
+
+        <!-- DNS CONTENT & AD-BLOCKER FILTERS -->
         <div class="glass card">
-          <h3>Blocklist presets</h3>
-            <p class="muted small">Enable automatic domain blocklists.</p>
-          <div id="dns-presets-list" class="dns-presets-list"></div>
-          <p id="dns-presets-error" class="error hidden"></p>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 12px;">
+            <div>
+              <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                <h3 style="margin: 0; font-size: 1.15rem;">Content &amp; Ad-Block Filters</h3>
+                <span id="adblock-status-badge" class="badge off">Protection Off</span>
+                <label class="switch" title="Toggle Network Ad-Block Protection" style="margin-inline-start: 4px;">
+                  <input type="checkbox" id="adblock-master-switch">
+                  <span class="slider"></span>
+                </label>
+                <span id="adblock-toggle-label" class="muted small" style="font-weight: 600;">Disabled</span>
+              </div>
+              <p class="muted small" style="margin-top: 4px;">Hardware-level network filtering: block ads, telemetry, trackers, and parental control categories across all devices.</p>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+              <span id="adblock-mode-val" class="hidden"></span>
+              <button type="button" id="adblock-update-btn" class="btn ghost small" title="Re-download latest ad feeds">⟳ Update Feeds</button>
+              <button type="button" id="adblock-whitelist-btn" class="btn ghost small" title="Whitelist a specific domain">＋ Whitelist</button>
+            </div>
+          </div>
+
+          <!-- AD-BLOCKER INTENSITY PRESETS (Directly toggled) -->
+          <div style="margin-top: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+              <span class="muted small" style="font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Network Ad-Blocker:</span>
+              <span class="font-mono text-accent small" id="adblock-domains-count">—</span>
+            </div>
+
+            <div class="adblock-tiers-grid">
+              <label class="adblock-tier-card active" data-tier="adblock-ultra">
+                <input type="radio" name="adblock-tier" value="adblock-ultra" checked>
+                <div class="adblock-tier-content">
+                  <div class="adblock-tier-head">
+                    <strong>Ultra PRO (Recommended)</strong>
+                    <span class="adblock-tier-tag pro">Most Powerful</span>
+                  </div>
+                  <p class="muted small">Comprehensive shield against web ads, video pre-rolls, mobile in-app ads, popups, and smart TV telemetry (HaGeZi Multi PRO + AdGuard).</p>
+                </div>
+              </label>
+
+              <label class="adblock-tier-card" data-tier="ads-tracking">
+                <input type="radio" name="adblock-tier" value="ads-tracking">
+                <div class="adblock-tier-content">
+                  <div class="adblock-tier-head">
+                    <strong>Standard Protection</strong>
+                    <span class="adblock-tier-tag">Lightweight</span>
+                  </div>
+                  <p class="muted small">Standard web ads and basic analytics tracking with zero false positives (StevenBlack unified hosts).</p>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <hr class="sep" style="margin: 20px 0 16px 0;">
+
+          <!-- CATEGORY PRESET SWITCHES -->
+          <div>
+            <div style="margin-bottom: 10px;">
+              <span class="muted small" style="font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Parental Controls &amp; Category Filters:</span>
+            </div>
+            <div id="dns-presets-list" class="dns-presets-list"></div>
+            <p id="dns-presets-error" class="error hidden"></p>
+          </div>
         </div>
 
         <div class="glass card">
@@ -900,6 +1325,146 @@
           <p id="dns-import-result" class="muted small hidden"></p>
         </div>
       </section>
+
+      <!-- VPN: Built-in sing-box Manager & Real-time Network Tunnel -->
+      <section id="panel-vpn" class="nav-panel hidden">
+        <div id="vpn-loading" class="vpn-loading-state hidden">
+          <div class="hist-spinner"></div>
+          <span>Loading VPN status, routing &amp; nodes...</span>
+        </div>
+        <div class="vpn-layout" id="vpn-content">
+
+          <!-- HERO STATUS & SPEED GAUGES -->
+          <div class="glass card vpn-hero-card">
+            <div class="vpn-hero-header">
+              <div class="vpn-hero-title">
+                <span class="vpn-badge-dot off" id="vpn-status-dot"></span>
+                <div>
+                  <h3 id="vpn-status-text">Disconnected</h3>
+                  <p class="muted small" id="vpn-node-subtext">No active VPN node selected</p>
+                </div>
+              </div>
+              <div class="vpn-hero-actions">
+                <button type="button" id="vpn-toggle-btn" class="btn primary">Connect VPN</button>
+              </div>
+            </div>
+
+            <div id="vpn-error-banner" class="banner error hidden" style="margin: 12px 0 0 0;"></div>
+
+            <!-- LIVE METRICS ROW -->
+            <div class="vpn-stats-grid">
+              <div class="vpn-stat-box">
+                <span class="vpn-stat-label">Download Speed</span>
+                <span class="vpn-stat-val text-accent" id="vpn-speed-down">0 KB/s</span>
+              </div>
+              <div class="vpn-stat-box">
+                <span class="vpn-stat-label">Upload Speed</span>
+                <span class="vpn-stat-val" id="vpn-speed-up">0 KB/s</span>
+              </div>
+              <div class="vpn-stat-box">
+                <span class="vpn-stat-label">Session Download</span>
+                <span class="vpn-stat-val" id="vpn-total-down">0 MB</span>
+              </div>
+              <div class="vpn-stat-box">
+                <span class="vpn-stat-label">Session Upload</span>
+                <span class="vpn-stat-val" id="vpn-total-up">0 MB</span>
+              </div>
+              <div class="vpn-stat-box">
+                <span class="vpn-stat-label">Active Connections</span>
+                <span class="vpn-stat-val" id="vpn-conns-count">0</span>
+              </div>
+              <div class="vpn-stat-box">
+                <span class="vpn-stat-label">Tunnel Uptime</span>
+                <span class="vpn-stat-val" id="vpn-uptime">—</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- SIDE-BY-SIDE BALANCED GRID: ROUTING & NODES -->
+          <div class="vpn-split-grid">
+            <!-- ROUTING CONTROLS -->
+            <div class="glass card vpn-split-col">
+              <div class="section-head">
+                <div>
+                  <h3>Device &amp; User Routing</h3>
+                  <p class="muted small">Specify which household members and devices route via VPN vs. Direct.</p>
+                </div>
+                <div class="btn-row" style="margin: 0;">
+                  <button type="button" id="vpn-route-all-btn" class="btn ghost tiny">Route all</button>
+                  <button type="button" id="vpn-route-none-btn" class="btn ghost tiny">Direct all</button>
+                </div>
+              </div>
+              <div class="vpn-routing-toolbar">
+                <div class="vpn-routing-tabs" id="vpn-routing-tab-group">
+                  <button type="button" class="vpn-tab-btn active" data-vtab="users">👤 Users</button>
+                  <button type="button" class="vpn-tab-btn" data-vtab="devices">📱 Devices</button>
+                </div>
+                <div class="vpn-routing-search-box">
+                  <input type="text" id="vpn-routing-search" placeholder="Search devices, users, or MAC…" class="small">
+                </div>
+              </div>
+              <div class="vpn-routing-list" id="vpn-routing-list">
+                <!-- dynamic user / device toggle rows -->
+              </div>
+            </div>
+
+            <!-- VPN NODES MANAGEMENT -->
+            <div class="glass card vpn-split-col">
+              <div class="section-head">
+                <div>
+                  <h3>VPN Nodes &amp; Configurations</h3>
+                  <p class="muted small">Manage V2Ray links (VLESS, VMess, Trojan, Shadowsocks) and custom configs.</p>
+                </div>
+                <div class="btn-row" style="margin: 0; align-items: center; gap: 14px;">
+                  <label class="switch-label" style="display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; user-select: none;" title="Skip TLS certificate validation across all VPN configurations">
+                    <span class="muted">Allow Insecure</span>
+                    <label class="switch tiny" style="margin: 0;">
+                      <input type="checkbox" id="vpn-allow-insecure-switch">
+                      <span class="slider"></span>
+                    </label>
+                  </label>
+                  <button type="button" id="vpn-add-node-btn" class="btn primary small">＋ Add Node</button>
+                </div>
+              </div>
+              <div class="table-wrap" style="margin-top: 10px;">
+                <table class="history-table" id="vpn-nodes-table">
+                  <thead>
+                    <tr>
+                      <th>Status</th>
+                      <th>Node Name</th>
+                      <th>Protocol</th>
+                      <th>Latency</th>
+                      <th class="num">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="vpn-nodes-tbody">
+                    <tr><td colspan="5" class="muted small" style="text-align: center; padding: 16px;">No VPN nodes added yet. Click "Add Node" to import a link.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- DIAGNOSTICS & CORE LOGS CONSOLE -->
+          <div class="glass card vpn-logs-card">
+            <div class="logs-head" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+              <div>
+                <h3 style="display: flex; align-items: center; gap: 8px;">
+                  <span>VPN Core Diagnostic Logs</span>
+                  <span id="vpn-logs-live-badge" class="badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600;">● Live Console</span>
+                </h3>
+                <p class="muted small" style="margin-top: 4px;">Real-time sing-box engine stdout/stderr output, policy routing events, and connection diagnostics.</p>
+              </div>
+              <div class="logs-toolbar" style="display: flex; gap: 8px; align-items: center;">
+                <button type="button" id="vpn-log-refresh" class="btn ghost small" title="Reload logs">⟳ Refresh</button>
+                <button type="button" id="vpn-log-clear" class="btn ghost small" title="Clear view">✕ Clear</button>
+              </div>
+            </div>
+            <div id="vpn-logs-view" class="vpn-terminal-view"></div>
+          </div>
+
+        </div>
+      </section>
     </main>
   </div>
 
@@ -943,10 +1508,6 @@
           <p class="muted small hidden" id="d-bypass-exempt-note">This device's user is
             exempt from quota — the per-device bypass is unnecessary.</p>
         </div>
-        <label class="check" title="This device's traffic skips the shared VPN tunnel and rides the direct connection. Quota, blocks, and speed caps still apply.">
-          <input type="checkbox" id="d-vpn-bypass">
-          <span>Bypass VPN tunnel (direct connection)</span>
-        </label>
         <div id="d-speed-wrap" class="hidden">
           <label>Speed limit (Mbps, 0 = unlimited)</label>
           <div class="speed-grid">
@@ -1013,10 +1574,6 @@
         <label class="check" title="Never quota-block this user, however much they use. Manual admin cuts still apply.">
           <input type="checkbox" id="u-exempt">
           <span>Exempt from quota (unlimited usage)</span>
-        </label>
-        <label class="check" title="All of this user's devices skip the shared VPN tunnel and ride the direct connection. Quota, blocks, and speed caps still apply.">
-          <input type="checkbox" id="u-vpn-bypass">
-          <span>Bypass VPN tunnel (all this user's devices)</span>
         </label>
         <div class="modal-actions">
           <button type="button" id="user-modal-cancel" class="btn ghost">Cancel</button>
@@ -1148,7 +1705,236 @@
     </div>
   </div>
 
-    <script src="/assets/qrcode.min.js"></script>
-    <script src="/assets/app.js?v=59"></script>
+  <!-- ADD VPN NODE MODAL -->
+  <div id="vpn-node-modal" class="modal hidden">
+    <div class="glass card modal-card" style="max-width: 540px;">
+      <h3 id="vpn-node-modal-title">Add VPN Node</h3>
+      <p class="muted small">Paste any V2Ray link (<code>vless://</code>, <code>vmess://</code>, <code>trojan://</code>, <code>ss://</code>) or a raw sing-box JSON configuration.</p>
+      <form id="vpn-node-form">
+        <div class="field">
+          <label for="vpn-node-name">Node Name (optional)</label>
+          <input type="text" id="vpn-node-name" placeholder="e.g. Frankfurt High Speed">
+        </div>
+        <div class="field">
+          <label for="vpn-node-raw">Configuration / Link</label>
+          <textarea id="vpn-node-raw" rows="6" placeholder="vless://uuid@host:port?...#Name&#10;vmess://...&#10;trojan://...&#10;ss://..." required style="font-family: monospace; font-size: 12px;"></textarea>
+        </div>
+        <p id="vpn-node-error" class="banner error hidden" style="margin-bottom: 10px;"></p>
+        <div class="modal-actions">
+          <button type="button" id="vpn-node-cancel" class="btn ghost">Cancel</button>
+          <button type="submit" id="vpn-node-submit" class="btn primary">Save &amp; Verify Node</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- EDIT PROXY CONFIGURATION MODAL (MATCHING SCREENSHOT) -->
+  <div id="vpn-edit-proxy-modal" class="modal hidden">
+    <div class="glass card modal-card proxy-edit-card" style="max-width: 520px; width: 100%;">
+      <div class="proxy-edit-header">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div class="proxy-edit-icon-box">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          </div>
+          <div>
+            <h3 class="proxy-edit-title">EDIT PROXY CONFIGURATION</h3>
+            <p class="proxy-edit-subtitle">CUSTOMIZE NODE SETTINGS &amp; PARAMETERS</p>
+          </div>
+        </div>
+        <button type="button" class="proxy-close-btn" id="ve-close-btn">✕</button>
+      </div>
+
+      <form id="vpn-edit-proxy-form" style="margin-top: 16px;">
+        <div class="field" style="margin-bottom: 12px;">
+          <label class="proxy-label" for="ve-name">NODE NAME / ALIAS</label>
+          <input type="text" id="ve-name" class="proxy-input" placeholder="e.g. youssef-laptop">
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+          <div class="field" style="flex: 3; margin: 0;">
+            <label class="proxy-label" for="ve-server">SERVER ADDRESS / DOMAIN</label>
+            <input type="text" id="ve-server" class="proxy-input" placeholder="e.g. yax.ddns.net" required spellcheck="false">
+          </div>
+          <div class="field" style="flex: 1; min-width: 80px; margin: 0;">
+            <label class="proxy-label" for="ve-port">PORT</label>
+            <input type="number" id="ve-port" class="proxy-input" min="1" max="65535" placeholder="443" required>
+          </div>
+        </div>
+
+        <div class="field" style="margin-bottom: 12px;">
+          <label class="proxy-label" for="ve-uuid">UUID / USER IDENTIFIER</label>
+          <input type="text" id="ve-uuid" class="proxy-input font-mono" placeholder="2dbd2d69-bd7b-4ad2-872b-61991c421eba" required spellcheck="false">
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+          <div class="field" style="flex: 1; margin: 0;">
+            <label class="proxy-label" for="ve-sni">SNI / SERVER NAME</label>
+            <input type="text" id="ve-sni" class="proxy-input" placeholder="www.speedtest.net" spellcheck="false">
+          </div>
+          <div class="field" style="flex: 1; margin: 0;">
+            <label class="proxy-label" for="ve-flow">FLOW</label>
+            <input type="text" id="ve-flow" class="proxy-input" placeholder="xtls-rprx-vision (optional)" spellcheck="false">
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+          <div class="field" style="flex: 1; margin: 0;">
+            <label class="proxy-label" for="ve-pbk">REALITY PUBLIC KEY (PBK)</label>
+            <input type="text" id="ve-pbk" class="proxy-input font-mono" placeholder="Public key for Reality (optional)" spellcheck="false">
+          </div>
+          <div class="field" style="flex: 1; margin: 0;">
+            <label class="proxy-label" for="ve-sid">SHORT ID (SID)</label>
+            <input type="text" id="ve-sid" class="proxy-input font-mono" placeholder="e.g. 16" spellcheck="false">
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-bottom: 16px;">
+          <div class="field" style="flex: 1; margin: 0;">
+            <label class="proxy-label" for="ve-transport">TRANSPORT</label>
+            <select id="ve-transport" class="proxy-input proxy-select">
+              <option value="TCP">TCP</option>
+              <option value="WS">WS</option>
+              <option value="gRPC">gRPC</option>
+            </select>
+          </div>
+          <div class="field" style="flex: 1; margin: 0;">
+            <label class="proxy-label" for="ve-path">PATH / HOST</label>
+            <input type="text" id="ve-path" class="proxy-input" placeholder="e.g. /ws or leave empty" spellcheck="false">
+          </div>
+        </div>
+
+        <p id="ve-error" class="banner error hidden" style="margin-bottom: 14px;"></p>
+
+        <div class="proxy-modal-footer">
+          <button type="button" id="ve-cancel" class="btn ghost proxy-btn-cancel">Cancel</button>
+          <button type="submit" id="ve-save" class="btn primary proxy-btn-save">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ADD RECHARGE / ADD-ON PACK MODAL -->
+  <div id="recharge-modal" class="modal hidden">
+    <div class="glass card modal-card" style="max-width: 500px;">
+      <h3>Add Pack to Queue</h3>
+      <p class="muted small">Add an extra data package (Bundle recharged). The base bundle is always consumed first.</p>
+      <div style="margin-top: 14px;">
+        <div class="settings-grid" style="grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div class="field">
+            <label for="set-recharge">Extra quota (GB)</label>
+            <input type="number" id="set-recharge" min="0.1" step="any" placeholder="e.g. 10">
+          </div>
+          <div class="field">
+            <label for="recharge-recurring">Pack renewal</label>
+            <select id="recharge-recurring">
+              <option value="0" selected>One-time (once only)</option>
+              <option value="1">Recurring (auto-renews)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="settings-grid" style="grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div class="field">
+            <label for="recharge-target-type">Target scope</label>
+            <select id="recharge-target-type">
+              <option value="all" selected>All (General Network pool)</option>
+              <option value="user">Specific User</option>
+              <option value="device">Specific Device</option>
+            </select>
+          </div>
+          <div class="field hidden" id="recharge-target-id-field">
+            <label for="recharge-target-id" id="recharge-target-id-label">Target selection</label>
+            <select id="recharge-target-id"></select>
+          </div>
+        </div>
+
+        <div class="settings-grid" style="grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px;">
+          <div class="field">
+            <label for="recharge-expiry">Expiry date <span class="muted small">(Default: 30 days)</span></label>
+            <input type="date" id="recharge-expiry">
+          </div>
+          <div class="field">
+            <label for="recharge-comment">Label / note <span class="muted small">(Optional)</span></label>
+            <input type="text" id="recharge-comment" placeholder="e.g. Study / Work">
+          </div>
+        </div>
+
+        <p id="recharge-modal-error" class="banner error hidden" style="margin-bottom: 10px;"></p>
+
+        <div class="modal-actions">
+          <button type="button" id="recharge-modal-cancel" class="btn ghost">Cancel</button>
+          <button type="button" id="recharge-btn" class="btn primary">Add Pack</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADD MAC RULE MODAL -->
+  <div id="mac-rule-modal" class="modal hidden">
+    <div class="glass card modal-card" style="max-width: 480px;">
+      <h3 id="mac-rule-modal-title">Add MAC Rule</h3>
+      <p class="muted small">Add one or more MAC addresses to the Whitelist (Allow) or Blacklist (Deny).</p>
+      <form id="mac-rule-form" style="margin-top: 14px;">
+        <div class="field" style="margin-bottom: 10px;">
+          <label for="mac-rule-type">Rule Type</label>
+          <select id="mac-rule-type">
+            <option value="allow">Whitelist (Allow — never quota-blocked)</option>
+            <option value="deny">Blacklist (Deny — always cut)</option>
+          </select>
+        </div>
+        <div class="field" style="margin-bottom: 10px;">
+          <label for="mac-rule-dev-select">Quick Select Device (optional)</label>
+          <select id="mac-rule-dev-select">
+            <option value="">Choose a known device…</option>
+          </select>
+        </div>
+        <div class="field" style="margin-bottom: 12px;">
+          <label for="mac-rule-macs">MAC Address(es)</label>
+          <textarea id="mac-rule-macs" rows="3" placeholder="aa:bb:cc:dd:ee:ff&#10;11:22:33:44:55:66" required></textarea>
+          <span class="muted small">One MAC per line or separated by commas.</span>
+        </div>
+        <div id="mac-rule-conflict-warn" class="banner error hidden" style="margin-bottom: 12px;"></div>
+        <div class="modal-actions">
+          <button type="button" id="mac-rule-modal-cancel" class="btn ghost">Cancel</button>
+          <button type="submit" id="mac-rule-submit-btn" class="btn primary">Add Rule</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ADD STATIC IP RESERVATION MODAL -->
+  <div id="static-lease-modal" class="modal hidden">
+    <div class="glass card modal-card" style="max-width: 500px;">
+      <h3>Add Static IP Reservation</h3>
+      <p class="muted small">Assign a fixed IP address to any managed device or MAC address via DHCP.</p>
+      <form id="static-lease-form" class="static-lease-form" style="margin-top: 14px;">
+        <div class="field" style="margin-bottom: 10px;">
+          <label for="sl-device-select">Device</label>
+          <select id="sl-device-select">
+            <option value="">Custom MAC address…</option>
+          </select>
+        </div>
+        <div class="field" style="margin-bottom: 10px;">
+          <label for="sl-mac">MAC address</label>
+          <input type="text" id="sl-mac" placeholder="aa:bb:cc:dd:ee:ff" required pattern="^([0-9a-fA-F]{2}[:-]){5}([0-9a-fA-F]{2})$">
+        </div>
+        <div class="field" style="margin-bottom: 10px;">
+          <label for="sl-ip">Static IP address</label>
+          <input type="text" id="sl-ip" placeholder="192.168.2.50" required>
+        </div>
+        <div class="field" style="margin-bottom: 14px;">
+          <label for="sl-hostname">Comment / Hostname (optional)</label>
+          <input type="text" id="sl-hostname" placeholder="e.g. Printer, Camera">
+        </div>
+        <p id="sl-form-msg" class="muted small hidden" style="margin-bottom: 10px;"></p>
+        <div class="modal-actions">
+          <button type="button" id="sl-modal-cancel" class="btn ghost">Cancel</button>
+          <button type="submit" id="sl-submit-btn" class="btn primary">Add Reservation</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+    <script src="/assets/app.js?v=94"></script>
 </body>
 </html>

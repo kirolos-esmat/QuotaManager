@@ -17,7 +17,7 @@ def _get_loop():
 
 from starlette.testclient import TestClient
 
-from api.app import create_app
+from api.app import create_app, _ensure_admin_password
 from api import waf as _waf
 from core import passwords as _passwords
 from core.config import WafConfig
@@ -35,16 +35,17 @@ def _valid_totp(secret: str) -> str:
 
 
 @pytest.fixture
-def client(tmp_path):
-    """A TestClient wired to a temp database (same shape as test_api.py's
-    fixture, plus the holder so tests can flip the topology for WAF mode)."""
+def app_factory(tmp_path):
+    """Factory yielding (_make, database, service, holder) without starting
+    a TestClient, so tests needing custom WAF/Web configs launch only one client."""
     database = Database(tmp_path / "sec.db")
     service = QuotaService(database, timezone="Africa/Cairo")
     holder = SnapshotHolder()
 
     async def _init():
         await database.connect()
-        return database, service
+        await _ensure_admin_password(database)
+        await service.ensure_period()
 
     _get_loop().run_until_complete(_init())
 
@@ -52,10 +53,19 @@ def client(tmp_path):
         return create_app(database, service, holder,
                           waf_config=waf_config, web_config=web_config)
 
-    app = _make()
-    with TestClient(app) as c:
-        yield c, database, service, holder, _make
+    yield _make, database, service, holder
     _get_loop().run_until_complete(database.close())
+
+
+@pytest.fixture
+def client(app_factory):
+    """A TestClient wired to a temp database (same shape as test_api.py's
+    fixture, plus the holder so tests can flip the topology for WAF mode)."""
+    make, database, service, holder = app_factory
+    app = make()
+    c = TestClient(app)
+    yield c, database, service, holder, make
+
 
 
 def _login(c: TestClient) -> None:
@@ -286,16 +296,20 @@ def test_report_page_gets_looser_csp(client):
 
 
 def test_docs_disabled_by_default(client):
-    c, _, _, _, make = client
+    c, _, _, _, _ = client
     # the FastAPI auto-docs + the full OpenAPI schema are OFF by default — an
     # attacker reaching the port gets NO structured endpoint map to mine
     assert c.get("/api/docs").status_code == 404
     assert c.get("/api/openapi.json").status_code == 404
+
+
+def test_docs_enabled_via_config(app_factory):
     # an explicit dev opt-in (web.docs_enabled) restores them
+    make, _, _, _ = app_factory
     from core.config import WebConfig
-    with TestClient(make(web_config=WebConfig(docs_enabled=True))) as c2:
-        assert c2.get("/api/docs").status_code == 200
-        assert c2.get("/api/openapi.json").status_code == 200
+    c = TestClient(make(web_config=WebConfig(docs_enabled=True)))
+    assert c.get("/api/docs").status_code == 200
+    assert c.get("/api/openapi.json").status_code == 200
 
 
 def test_noindex_headers_and_robots(client):
@@ -399,81 +413,81 @@ def test_waf_rate_state_window():
 # -- WAF middleware behaviour ---------------------------------------------------
 
 
-def test_waf_strict_blocks_on_wan(client):
-    c, database, _, holder, make = client
+def test_waf_strict_blocks_on_wan(app_factory):
+    make, database, _, holder = app_factory
     holder.swap(EngineSnapshot(wan_status={"topology": "wan"}))
     # Disable local exemption so the test's 127.0.0.1 source is not exempt.
     app = make(WafConfig(local_subnets=[]))
-    with TestClient(app) as c2:
-        # SQLi payload to a mutating route -> blocked before the handler runs
-        r = c2.post("/api/bundle", json={"total_gb": 1},
-                    data="total_gb=1' or 1=1 --", headers={
-                        "content-type": "text/plain"})
-        assert r.status_code == 403
-        assert "WAF" in r.json()["detail"]
-        events = _get_loop().run_until_complete(
-            database.list_events())
-        assert any("WAF" in e["message"] for e in events)
+    c2 = TestClient(app)
+    # SQLi payload to a mutating route -> blocked before the handler runs
+    r = c2.post("/api/bundle", json={"total_gb": 1},
+                data="total_gb=1' or 1=1 --", headers={
+                    "content-type": "text/plain"})
+    assert r.status_code == 403
+    assert "WAF" in r.json()["detail"]
+    events = _get_loop().run_until_complete(
+        database.list_events())
+    assert any("WAF" in e["message"] for e in events)
 
 
-def test_waf_log_only_on_lan(client):
-    c, database, _, holder, make = client
+def test_waf_log_only_on_lan(app_factory):
+    make, database, _, holder = app_factory
     holder.swap(EngineSnapshot(wan_status={"topology": "lan"}))
     # Disable local exemption so the WAF inspects the test's 127.0.0.1.
     app = make(WafConfig(local_subnets=[]))
-    with TestClient(app) as c2:
-        # same payload on LAN: recorded, NOT blocked (the LAN dashboard stays up)
-        r = c2.post("/api/bundle", json={"total_gb": 1},
-                    data="total_gb=<script>alert(1)</script>", headers={
-                        "content-type": "text/plain"})
-        assert r.status_code == 401  # passed through WAF, hit auth
-        events = _get_loop().run_until_complete(
-            database.list_events())
-        assert any("WAF xss" in e["message"] for e in events)
+    c2 = TestClient(app)
+    # same payload on LAN: recorded, NOT blocked (the LAN dashboard stays up)
+    r = c2.post("/api/bundle", json={"total_gb": 1},
+                data="total_gb=<script>alert(1)</script>", headers={
+                    "content-type": "text/plain"})
+    assert r.status_code == 401  # passed through WAF, hit auth
+    events = _get_loop().run_until_complete(
+        database.list_events())
+    assert any("WAF xss" in e["message"] for e in events)
 
 
-def test_waf_scanner_ua_blocks_on_wan(client):
-    c, _, _, holder, make = client
+def test_waf_scanner_ua_blocks_on_wan(app_factory):
+    make, _, _, holder = app_factory
     holder.swap(EngineSnapshot(wan_status={"topology": "wan"}))
     # Disable local exemption so the test's 127.0.0.1 source is not exempt.
     app = make(WafConfig(local_subnets=[]))
-    with TestClient(app) as c2:
-        r = c2.get("/api/dashboard", headers={"User-Agent": "sqlmap/1.7.4"})
-        assert r.status_code == 403
+    c2 = TestClient(app)
+    r = c2.get("/api/dashboard", headers={"User-Agent": "sqlmap/1.7.4"})
+    assert r.status_code == 403
 
 
-def test_waf_oversized_body_blocks(client):
-    c, _, _, holder, make = client
+def test_waf_oversized_body_blocks(app_factory):
+    make, _, _, holder = app_factory
     holder.swap(EngineSnapshot(wan_status={"topology": "wan"}))
     app = make(WafConfig(max_body_bytes=64, local_subnets=[]))
-    with TestClient(app) as c2:
-        c2.post("/api/login", json={"password": "admin"})
-        r = c2.post("/api/bundle",
-                    json={"total_gb": 1, "padding": "x" * 100})
-        assert r.status_code == 403
-        assert "oversized-body" in str(r.json())
+    c2 = TestClient(app)
+    c2.post("/api/login", json={"password": "admin"})
+    r = c2.post("/api/bundle",
+                json={"total_gb": 1, "padding": "x" * 100})
+    assert r.status_code == 403
+    assert "oversized-body" in str(r.json())
 
 
-def test_waf_endpoint_rate_limit_strict(client):
-    c, _, _, holder, make = client
+def test_waf_endpoint_rate_limit_strict(app_factory):
+    make, _, _, holder = app_factory
     holder.swap(EngineSnapshot(wan_status={"topology": "wan"}))
     app = make(WafConfig(endpoint_limits={"/api/dashboard": [1, 60]},
                           local_subnets=[]))
-    with TestClient(app) as c2:
-        c2.post("/api/login", json={"password": "admin"})
-        assert c2.get("/api/dashboard").status_code == 200
-        assert c2.get("/api/dashboard").status_code == 429
+    c2 = TestClient(app)
+    c2.post("/api/login", json={"password": "admin"})
+    assert c2.get("/api/dashboard").status_code == 200
+    assert c2.get("/api/dashboard").status_code == 429
 
 
-def test_waf_off_when_disabled(client):
-    c, _, _, holder, make = client
+def test_waf_off_when_disabled(app_factory):
+    make, _, _, holder = app_factory
     holder.swap(EngineSnapshot(wan_status={"topology": "wan"}))
     app = make(WafConfig(enabled=False))
-    with TestClient(app) as c2:
-        r = c2.post("/api/bundle", json={"total_gb": 1},
-                    data="x' or 1=1 --", headers={
-                        "content-type": "text/plain"})
-        assert r.status_code == 401  # WAF off -> passed through
+    c2 = TestClient(app)
+    r = c2.post("/api/bundle", json={"total_gb": 1},
+                data="x' or 1=1 --", headers={
+                    "content-type": "text/plain"})
+    assert r.status_code == 401  # WAF off -> passed through
 
 
 # -- local-management WAF exemption -----------------------------------------
@@ -491,26 +505,26 @@ def test_is_local_ip_unit():
     assert not _waf.is_local_ip("127.0.0.1", [])
 
 
-def test_waf_custom_subnet_exempt(client):
+def test_waf_custom_subnet_exempt(app_factory):
     """Request from a custom local subnet is exempt in WAN strict mode."""
-    c, _, _, holder, make = client
+    make, _, _, holder = app_factory
     holder.swap(EngineSnapshot(wan_status={"topology": "wan"}))
     # Only the client subnet is exempt; loopback is NOT.
     app = make(WafConfig(local_subnets=["192.168.2.0/24"]))
-    with TestClient(app) as c2:
-        # 127.0.0.1 is NOT in 192.168.2.0/24 → should be blocked.
-        r = c2.get("/api/dashboard", headers={"User-Agent": "curl/8.0"})
-        assert r.status_code == 403
+    c2 = TestClient(app)
+    # 127.0.0.1 is NOT in 192.168.2.0/24 → should be blocked.
+    r = c2.get("/api/dashboard", headers={"User-Agent": "curl/8.0"})
+    assert r.status_code == 403
 
 
-def test_waf_no_exemption_when_local_subnets_empty(client):
+def test_waf_no_exemption_when_local_subnets_empty(app_factory):
     """Without local_subnets, even localhost is subject to WAF."""
-    c, _, _, holder, make = client
+    make, _, _, holder = app_factory
     holder.swap(EngineSnapshot(wan_status={"topology": "wan"}))
     app = make(WafConfig(local_subnets=[]))
-    with TestClient(app) as c2:
-        r = c2.get("/api/dashboard", headers={"User-Agent": "sqlmap/1.7.4"})
-        assert r.status_code == 403
+    c2 = TestClient(app)
+    r = c2.get("/api/dashboard", headers={"User-Agent": "sqlmap/1.7.4"})
+    assert r.status_code == 403
 
 
 # -- SSRF guards (updater / dns_rules) -----------------------------------------
