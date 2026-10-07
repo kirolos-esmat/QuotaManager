@@ -11,14 +11,11 @@ concurrency:
 
 permissions:
   contents: write
-  packages: write
 
 jobs:
   sync:
     name: Sync with Upstream
     runs-on: ubuntu-latest
-    outputs:
-      synced: ${{ steps.sync_step.outputs.synced }}
     steps:
       - name: Checkout Fork Repository
         uses: actions/checkout@v4
@@ -49,6 +46,11 @@ jobs:
           def run_cmd(cmd, check=True):
               res = subprocess.run(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
               if check and res.returncode != 0:
+                  print(f"::error::Command failed (exit {res.returncode}): {cmd}")
+                  if res.stdout.strip():
+                      print(f"STDOUT:\n{res.stdout.strip()}")
+                  if res.stderr.strip():
+                      print(f"STDERR:\n{res.stderr.strip()}")
                   raise subprocess.CalledProcessError(res.returncode, cmd, res.stdout, res.stderr)
               return res.returncode, res.stdout.strip(), res.stderr.strip()
 
@@ -153,8 +155,36 @@ jobs:
               parent_full = parent_info["full_name"]
 
               # 2. Add Upstream Remote and Fetch Branch + Tags
+              # NOTE: release tags (v*) are never force-updated here. If a fork
+              # tag diverges from the upstream tag of the same name, this fetch
+              # fails instead of silently clobbering it — delete the divergent
+              # fork tag/release manually, then re-run.
               run_cmd(f"git remote add upstream https://github.com/{parent_full}.git || git remote set-url upstream https://github.com/{parent_full}.git")
-              run_cmd(f"git fetch --tags upstream {target_branch}")
+              fetch_code, fetch_out, fetch_err = run_cmd(f"git fetch --tags upstream {target_branch}", check=False)
+              if fetch_code != 0:
+                  write_summary([
+                      "## Upstream Sync",
+                      "",
+                      f"**Repository:** `{repo}`",
+                      f"**Upstream:** `{parent_full}`",
+                      f"**Branch:** `{target_branch}`",
+                      "",
+                      "**Status:** `FAILED (FETCH ERROR)`",
+                      "",
+                      f"Could not fetch from upstream `{parent_full}`.",
+                      "",
+                      "### git output",
+                      "```",
+                      fetch_out,
+                      fetch_err,
+                      "```",
+                      "",
+                      "If a tag update was `[rejected] (would clobber existing tag)`, "
+                      "a fork tag diverged from its upstream counterpart — delete the "
+                      "divergent fork tag/release manually and re-run.",
+                  ])
+                  set_output("synced", "false")
+                  sys.exit(1)
               run_cmd("git push origin --tags", check=False)
 
               # 3. Sync GitHub Releases from Upstream
@@ -305,14 +335,3 @@ jobs:
 
           sync_fork()
           EOF
-
-  publish-docker:
-    name: Build & Publish Docker Image
-    needs: sync
-    if: needs.sync.outputs.synced == 'true'
-    permissions:
-      contents: read
-      packages: write
-    uses: ./.github/workflows/docker-publish.yml
-    with:
-      ref: main
