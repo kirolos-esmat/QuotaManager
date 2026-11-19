@@ -346,6 +346,9 @@ class Gateway:
             if cfg.updates.enabled else None)
         #: last DNS-history TTL prune's clock, for the hourly gate
         self._last_dns_prune = time.monotonic()
+        #: last apt-source check (quota.apt_source): re-run every few hours
+        #: until nothing names the legacy apt address any more
+        self._last_apt_source_check = 0.0
         #: last rogue scan's result, surfaced through the holder every tick
         self._rogues: list[object] = []
         #: start the scan clock NOW, not at boot: the first scan fires 60 s
@@ -713,6 +716,25 @@ class Gateway:
             log.exception("network self-heal failed")
             return []
 
+    APT_SOURCE_INTERVAL = 6 * 3600
+
+    async def _apt_source_tick(self) -> None:
+        """Keep apt pointed at the live apt repository (see quota.apt_source).
+        Runs off the event loop; gated to once per few hours; never raises."""
+        now = time.monotonic()
+        if (self._last_apt_source_check
+                and now - self._last_apt_source_check < self.APT_SOURCE_INTERVAL):
+            return
+        self._last_apt_source_check = now or 1.0
+        try:
+            from quota.apt_source import migrate_apt_source
+            res = await self._timed("apt_source", asyncio.to_thread(migrate_apt_source))
+            if res.get("changed"):
+                await self.database.add_event(
+                    "apt source updated to the project's new address", "info")
+        except Exception:  # noqa: BLE001 — cosmetic follow-up, never stalls a tick
+            log.debug("apt source check failed", exc_info=True)
+
     def _startup_self_heal(self) -> None:
         """Verify / recreate infrastructure the app depends on but doesn't own.
 
@@ -940,18 +962,31 @@ class Gateway:
                     return
                 elif await self.service.is_guest_mode():
                     # Guest mode is active: new guest devices are registered in the
-                    # pending lock (0 GB allowance, admin-cut) until admin approves.
+                    # pending lock (0 GB allowance) until admin approval or a
+                    # guest voucher redemption. Keep this distinct from an
+                    # explicit administrator rejection.
+                    guest_limit_reached = (
+                        await self.database.count_guest_users()
+                        >= await self.service.guest_limit())
+                    guest_state = (
+                        _db.BLOCK_ADMIN if guest_limit_reached
+                        else _db.BLOCK_GUEST_PENDING)
                     dev = await self.database.upsert_device(
                         mac, name="", quota_mode=_db.QUOTA_FIXED,
                         fixed_gb=0.0, guest=True)
                     await self.database.set_device_state(
-                        dev.id, _db.BLOCK_ADMIN)
+                        dev.id, guest_state)
                     if dev.user_id:
                         await self.database.update_user(
-                            dev.user_id, block_state=_db.BLOCK_ADMIN)
-                    await self.database.add_event(
-                        f"New GUEST on network: {dev.mac} ({ip}) — "
-                        f"awaiting admin approval", "info", dev.id)
+                            dev.user_id, block_state=guest_state)
+                    if guest_limit_reached:
+                        await self.database.add_event(
+                            f"New GUEST blocked: {dev.mac} ({ip}) — "
+                            "guest limit reached", "warn", dev.id)
+                    else:
+                        await self.database.add_event(
+                            f"New GUEST on network: {dev.mac} ({ip}) — "
+                            "awaiting admin approval", "info", dev.id)
                 else:
                     # Brand-new device: mint its user in the DISABLED
                     # onboarding lock — 0 GB, no auto share, kernel-cut until
@@ -1512,6 +1547,13 @@ class Gateway:
                 await self._timed("updater.maybe_check", self.updater.maybe_check())
             except Exception:  # noqa: BLE001 — never let the updater stall a tick
                 log.exception("update check tick failed")
+
+        # 1h2. apt source follow-up for the project rename: while a source file
+        #      still names the legacy apt address, switch it as soon as the new
+        #      one serves the signed repository. No-op (no network, no disk)
+        #      once nothing names it. Same master switch as the updater.
+        if self.updater is not None:
+            await self._apt_source_tick()
 
         # 2. Drain the packet engine's counters into usage_daily.
         #    flush() shells out to `nft -j list counters` (a subprocess). Run

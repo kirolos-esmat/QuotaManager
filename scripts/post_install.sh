@@ -38,32 +38,60 @@ fi
 # download fails here, hand the rest of the setup to systemd, which runs it a few
 # seconds later outside the package manager. Only when that is not possible, or
 # the deferred run fails too, tell the admin how to finish by hand.
-pip_ok=0
-for attempt in 1 2; do
-    if "$APP_DIR/.venv/bin/python" -m pip install --disable-pip-version-check --no-input \
-        --quiet --retries 1 --upgrade -r "$APP_DIR/requirements-linux.txt"; then
-        pip_ok=1
-        break
+SETUP_UNIT=quota-manager-setup
+can_defer=0
+if [ "${QUOTA_DEFERRED:-}" != 1 ] && command -v systemd-run >/dev/null 2>&1 \
+        && [ -d /run/systemd/system ]; then
+    can_defer=1
+fi
+
+# Quick silent probe: if inside a sandboxed package manager with no network,
+# defer immediately to systemd instead of letting pip spew connection errors.
+net_ok=1
+if [ "$can_defer" = 1 ]; then
+    if ! python3 -c "import urllib.request; urllib.request.urlopen('https://pypi.org', timeout=2)" >/dev/null 2>&1; then
+        net_ok=0
     fi
-    log "could not download the Python dependencies (attempt $attempt of 2)"
-    sleep 3
-done
+fi
+
+# Download the dependencies (two tries). Sets pip_ok=1 on success.
+pip_ok=0
+try_pip() {
+    for attempt in 1 2; do
+        if "$APP_DIR/.venv/bin/python" -m pip install --disable-pip-version-check --no-input \
+            --quiet --retries 1 --upgrade -r "$APP_DIR/requirements-linux.txt"; then
+            pip_ok=1
+            return 0
+        fi
+        log "could not download the Python dependencies (attempt $attempt of 2)"
+        sleep 3
+    done
+    return 1
+}
+
+if [ "$net_ok" = 1 ]; then
+    try_pip || true
+fi
 if [ "$pip_ok" != 1 ]; then
-    SETUP_UNIT=quota-manager-setup
-    if [ "${QUOTA_DEFERRED:-}" != 1 ] && command -v systemd-run >/dev/null 2>&1 \
-            && [ -d /run/systemd/system ]; then
+    if [ "$can_defer" = 1 ]; then
         systemctl stop "$SETUP_UNIT.timer" "$SETUP_UNIT.service" >/dev/null 2>&1 || true
         systemctl reset-failed "$SETUP_UNIT.service" >/dev/null 2>&1 || true
         if systemd-run --quiet --collect --unit="$SETUP_UNIT" --on-active=5 \
                 --setenv=QUOTA_DEFERRED=1 \
                 /bin/bash "$APP_DIR/scripts/post_install.sh" "${1:-}" >/dev/null 2>&1; then
-            log "no network inside the package manager - the setup will finish by itself"
-            log "in about a minute. Follow it with: journalctl -fu $SETUP_UNIT"
-            log "If the dashboard does not open after that, run:"
-            log "    sudo bash $APP_DIR/scripts/post_install.sh ${1:-}"
+            log "package manager is sandboxed (no network) - setup will finish automatically"
+            log "in the background in about a minute. Follow progress with: journalctl -fu $SETUP_UNIT"
             exit 0
         fi
     fi
+    # The quick probe may have been wrong (slow link, a pip mirror instead of
+    # pypi.org): when it skipped pip and deferring was impossible, try pip now
+    # before telling the admin the setup failed.
+    if [ "$net_ok" != 1 ]; then
+        try_pip || true
+    fi
+fi
+if [ "$pip_ok" != 1 ]; then
     echo "" >&2
     echo "[quota-manager] ERROR: SETUP IS NOT FINISHED." >&2
     echo "[quota-manager] The Python dependencies could not be downloaded from pypi.org" >&2

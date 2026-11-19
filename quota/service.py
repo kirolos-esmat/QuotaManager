@@ -39,6 +39,7 @@ from typing import Any, Optional
 from core import timeutil
 from quota import daily_plan as _dp
 from quota import db as _db
+from quota.guest_state import is_pending_guest
 from quota.vendor import vendor_for
 
 log = logging.getLogger("quota.service")
@@ -522,16 +523,18 @@ class QuotaService:
         """Is the user quota-blocked, honouring the quota-exemption flag?
 
         A DISABLED user (a fresh auto-registered device awaiting the admin's
-        shared/fixed assignment) is ALWAYS quota-blocked — 0 GB, regardless of
-        usage, top-ups or the exemption flag. An exempt user is never
+        shared/fixed assignment) is quota-blocked — 0 GB, regardless of usage
+        or top-ups — UNLESS the admin switched the Unlimited (exempt) flag on:
+        the exemption is checked first, so "Unlimited" really opens a device
+        that is still unassigned (issue #40). An exempt user is never
         quota-blocked, whatever their usage — the exemption lifts the
         usage-vs-allowance gate only; a manual admin cut (user/device level)
         still resolves through ``resolve_device_state``.
         """
-        if user is not None and user.quota_mode == _db.QUOTA_DISABLED:
-            return True
         if user is not None and user.exempt_quota:
             return False
+        if user is not None and user.quota_mode == _db.QUOTA_DISABLED:
+            return True
         if self.free_mode and not (user is not None and user.protected):
             return False  # everyone is out of quota: the box opens for all
         return QuotaService.quota_blocked_for(user, allowance, used_gb)
@@ -558,6 +561,11 @@ class QuotaService:
             return _db.BLOCK_ADMIN
         if dev.block_state == _db.BLOCK_ADMIN:
             return _db.BLOCK_ADMIN
+        if is_pending_guest(
+                user.guest if user is not None else False,
+                user.block_state if user is not None else None,
+                dev.block_state):
+            return _db.BLOCK_GUEST_PENDING
         if allow_listed:
             return _db.BLOCK_OK
         if user_quota_blocked and not dev.bypass and not has_device_booster:
@@ -903,6 +911,8 @@ class QuotaService:
                 # render/enforcement time, never persisted as 'quota' — a
                 # persisted flag would desync the Gateway card's toggle.
                 continue
+            if is_pending_guest(user.guest, user.block_state, dev.block_state):
+                continue  # pending guest state lasts until approval or rejection
             if dev.block_state == _db.BLOCK_ADMIN:
                 continue  # per-device manual override stays until lifted
             if user.block_state == _db.BLOCK_ADMIN:
