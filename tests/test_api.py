@@ -901,6 +901,66 @@ def test_guest_admin_approve_and_reject(client):
     assert user_view["blocked"] is True
 
 
+@pytest.mark.parametrize("failure_point", ["recompute", "audit"])
+def test_voucher_retry_recovers_after_post_commit_failure(tmp_path, failure_point):
+    """A committed voucher stays accepted if derived work or audit logging fails."""
+    database = _db.Database(tmp_path / "voucher-recovery.db")
+    service = QuotaService(database, timezone="Africa/Cairo")
+    holder = SnapshotHolder()
+
+    async def _init():
+        await database.connect()
+        await service.open_period()
+        await database.set_setting("guest_mode", "1")
+        guest = await database.create_user(
+            name="", quota_mode=_db.QUOTA_FIXED, fixed_gb=0.0, guest=True)
+        device = await database.upsert_device(
+            "aa:bb:cc:dd:ee:96", name="Visitor", user_id=guest.id,
+            guest=True, quota_mode=_db.QUOTA_FIXED, fixed_gb=0.0)
+        await database.set_device_state(device.id, _db.BLOCK_GUEST_PENDING)
+        await database.update_user(guest.id, block_state=_db.BLOCK_GUEST_PENDING)
+        await database.create_guest_voucher("recover-1234", 2.5)
+        holder.swap(EngineSnapshot(ip_to_mac={"127.0.0.1": device.mac}))
+        return guest.id
+
+    guest_id = _get_loop().run_until_complete(_init())
+    original_recompute = service.recompute_allowances
+    original_add_event = database.add_event
+    failures = [True]
+
+    async def fail_once():
+        if failures.pop() if failures else False:
+            raise RuntimeError("injected post-commit recompute failure")
+        await original_recompute()
+
+    async def fail_event_once(*args, **kwargs):
+        if failures.pop() if failures else False:
+            raise RuntimeError("injected post-commit event failure")
+        await original_add_event(*args, **kwargs)
+
+    if failure_point == "recompute":
+        service.recompute_allowances = fail_once
+    else:
+        database.add_event = fail_event_once
+    app = create_app(database, service, holder)
+    try:
+        with TestClient(app, client=("127.0.0.1", 50000)) as c:
+            first = c.post("/api/guest/voucher/redeem", json={"code": "recover-1234"})
+            assert first.status_code == 200, first.text
+            assert first.json() == {"ok": True, "status": "approved", "quota_gb": 2.5}
+
+            retry = c.post("/api/guest/voucher/redeem", json={"code": "recover-1234"})
+            assert retry.status_code == 200, retry.text
+            assert retry.json() == first.json()
+
+        guest = _get_loop().run_until_complete(database.get_user(guest_id))
+        voucher = _get_loop().run_until_complete(database.get_guest_voucher("recover-1234"))
+        assert guest is not None and guest.fixed_gb == 2.5
+        assert voucher is not None and voucher.used_at is not None
+    finally:
+        _get_loop().run_until_complete(database.close())
+
+
 def test_connected_follows_arp_responders(tmp_path):
     """With the ARP probe running, a leased device is "connected" only if it
     ALSO answered the latest sweep — a lease alone lags reality by up to
@@ -1688,7 +1748,8 @@ def test_gateway_payload_engine_programmed_but_ui_free(tmp_path):
 #     import asyncio
     database = _db.Database(tmp_path / "gw.db")
     holder = SnapshotHolder()
-    holder.swap(EngineSnapshot(gateway_blocked=True, engine_available=True))
+    holder.swap(EngineSnapshot(gateway_blocked=True, engine_available=True,
+                               engine_sync_error="nft enforcement sync failed"))
     service = QuotaService(database, timezone="Africa/Cairo")
     _get_loop().run_until_complete(database.connect())
     app = create_app(database, service, holder)
@@ -1699,6 +1760,8 @@ def test_gateway_payload_engine_programmed_but_ui_free(tmp_path):
             assert dash["gateway"]["blocked_desired"] is False
             assert dash["gateway"]["blocked_programmed"] is True
             assert dash["gateway"]["engine_available"] is True
+            assert dash["gateway"]["engine_sync_error"] == \
+                "nft enforcement sync failed"
     finally:
         _get_loop().run_until_complete(database.close())
 
@@ -2108,7 +2171,7 @@ def test_milestone_page_is_public(tmp_path):
     r = _client_from(app, "192.168.2.55").get("/milestone")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
-    assert b"Quota" in r.content
+    assert b"Netrex" in r.content
     assert "assets/pub.css" in r.text
     _get_loop().run_until_complete(database.close())
 
@@ -3105,3 +3168,45 @@ def test_unlimited_opens_an_unassigned_user(client):
     # turning Unlimited off puts the onboarding lock back
     assert c.patch(f"/api/users/{uid}", json={"exempt_quota": False}).status_code == 200
     assert _user_view(c, uid)["blocked"] is True
+
+
+def test_internet_schedule_api(client):
+    """Internet schedules: CRUD, bonus time, allowed sites, dashboard flag.
+    The client's clock is Saturday 2026-08-15 12:00 (weekday 5)."""
+    c, database, _ = client
+    assert c.get("/api/schedules").status_code == 401
+    _login(c)
+    dev = _get_loop().run_until_complete(
+        database.upsert_device("aa:bb:cc:dd:ee:51", name="Kid tablet"))
+    body = {"name": "Homework", "users": [dev.user_id],
+            "windows": [{"days": [5], "start": "11:00", "end": "13:30"}]}
+    r = c.post("/api/schedules", json=body)
+    assert r.status_code == 201, r.text
+    s = r.json()["schedules"][0]
+    assert s["state"]["active"] and s["device_count"] == 1
+    assert s["windows"][0] == {"days": [5], "start": "11:00", "end": "13:30"}
+
+    dash = c.get("/api/dashboard").json()
+    dv = next(d for d in dash["devices"] if d["mac"] == "aa:bb:cc:dd:ee:51")
+    assert dv["schedule"]["names"] == ["Homework"]
+    uv = next(u for u in dash["users"] if u["id"] == dev.user_id)
+    assert uv["schedule"]["devices"] == 1
+
+    r = c.post(f"/api/schedules/{s['id']}/pause", json={"minutes": 30})
+    st = r.json()["schedules"][0]["state"]
+    assert r.status_code == 200 and st["paused"] and not st["active"]
+    assert c.post(f"/api/schedules/{s['id']}/pause", json={"minutes": 5000}).status_code == 422
+    assert c.post("/api/schedules/99/pause", json={"minutes": 5}).status_code == 404
+
+    bad = {**body, "windows": [{"days": [5], "start": "25:00", "end": "13:00"}]}
+    assert c.put(f"/api/schedules/{s['id']}", json=bad).status_code == 422
+    r = c.put(f"/api/schedules/{s['id']}", json={**body, "enabled": False})
+    assert r.status_code == 200 and not r.json()["schedules"][0]["enabled"]
+
+    r = c.put("/api/schedule-sites", json={"sites": ["classroom.google.com"]})
+    assert r.status_code == 200 and r.json()["sites"] == ["classroom.google.com"]
+    assert c.put("/api/schedule-sites", json={"sites": ["no way"]}).status_code == 422
+
+    assert c.delete(f"/api/schedules/{s['id']}").status_code == 200
+    assert c.delete(f"/api/schedules/{s['id']}").status_code == 404
+    assert c.get("/api/schedules").json()["schedules"] == []

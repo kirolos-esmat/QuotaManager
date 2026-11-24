@@ -1,4 +1,18 @@
-# Quota Manager — Developer Guide
+# Netrex — Developer Guide
+
+> **Naming.** The project was called *Quota Manager* until the Netrex rename.
+> Only user-facing names changed. Every internal identifier keeps the old name
+> on purpose: the `quota-manager` package, `/opt/quota-manager`, the
+> `quota-gateway` / `quota-wan-ppp` services, `/etc/quota-gateway`,
+> `/var/lib/quota-gateway`, the `quota_*` nftables tables, release asset names
+> (`quota-manager_<v>_all.deb`, which every updater since 0.2 looks for), the
+> apt key file `quota-manager.gpg` and the signing key itself, the apt
+> `Origin`/`Label: Quota Manager` (apt refuses a repo whose Origin/Label changed
+> without `--allow-releaseinfo-change`), and the passkey `USER_ID` (changing it
+> orphans registered passkeys). The updater tries `UserJoo9/Netrex` first and
+> falls back to `UserJoo9/QuotaManager`; `quota/apt_source.py` moves 0.5.8+
+> boxes from `UserJoo9.github.io/QuotaManager` to `UserJoo9.github.io/Netrex`
+> once the new Pages site serves the repo.
 
 How the app actually works: the topology, the packet path, the maintenance
 loop, the quota model, and every subsystem — plus configuration, the REST API,
@@ -15,6 +29,7 @@ the project layout, tests, and the release process.
 - [Topology: a one-armed gateway](#topology-a-one-armed-gateway)
 - [The packet path (no Python)](#the-packet-path-no-python)
 - [The maintenance loop](#the-maintenance-loop)
+- [SQLite backup and restore](#sqlite-backup-and-restore)
 - [Quota model](#quota-model)
 - [Speed shaping](#speed-shaping)
 - [DNS filtering (domain rules, presets, per-client DNS servers)](#dns-filtering-domain-rules-presets-per-client-dns-servers)
@@ -249,6 +264,146 @@ because the package's `prerm` stops the `quota-gateway` service — a plain chil
 `apt-get` would die with the cgroup. The whole call is behind a try/except so a
 network failure never stalls a tick. See [Software updates](#software-updates)
 below.
+
+---
+
+## SQLite backup and restore
+
+The runtime database is `/var/lib/quota-gateway/quota.db`; `Database.connect()`
+opens it in WAL mode (`PRAGMA journal_mode=WAL`). While the service is running,
+recent committed changes can still live in `quota.db-wal` and are not necessarily
+checkpointed into `quota.db`. A plain `cp quota.db backup.db` is therefore not a
+consistent live backup. Do not copy the main file and its `-wal`/`-shm` sidecars
+separately while SQLite is open; writes and checkpoints can race that copy.
+
+Use Python's standard-library `sqlite3.Connection.backup()` API. It takes a
+consistent SQLite snapshot while writers continue and includes committed WAL
+content visible to that snapshot (later writes are not included). After the
+copy, switch the destination to rollback-journal `DELETE` mode and close it;
+this checkpoints any destination WAL and makes the backup a standalone file
+without sidecars. The script checks it with `PRAGMA integrity_check` before
+reporting success and restricts its mode:
+
+```bash
+( set -eu
+  sudo install -d -m 700 /var/lib/quota-gateway/backups
+  BACKUP="/var/lib/quota-gateway/backups/quota-$(date +%F-%H%M%S).db"
+  sudo test ! -e "$BACKUP"
+  sudo python3 - "$BACKUP" <<'PY'
+from contextlib import closing
+import os
+import sqlite3
+import sys
+
+destination = sys.argv[1]
+with closing(sqlite3.connect(
+        "file:/var/lib/quota-gateway/quota.db?mode=ro", uri=True)) as source:
+    with closing(sqlite3.connect(destination)) as backup:
+        source.backup(backup)
+        mode = backup.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+        if mode.lower() != "delete":
+            raise SystemExit(f"Could not make backup standalone: {mode}")
+        check = backup.execute("PRAGMA integrity_check").fetchone()[0]
+        if check != "ok":
+            raise SystemExit(f"Backup validation failed: {check}")
+os.chmod(destination, 0o600)
+print(f"Backup saved and verified: {destination}")
+PY
+)
+```
+
+Restore only with the service stopped. Validate the standalone backup first;
+then move the old database and any sidecars aside as one set before installing
+the backup. Never put an old `quota.db-wal` beside a restored database. For
+example:
+
+```bash
+( set -eu
+  DB_DIR=/var/lib/quota-gateway
+  BACKUP="/var/lib/quota-gateway/backups/quota-YYYY-MM-DD-HHMMSS.db"
+  STAMP="$(date +%F-%H%M%S)"
+  STAGED="$DB_DIR/.quota.db.restore-$STAMP-$$"
+  ARCHIVE="$DB_DIR/quota.db.pre-restore-$STAMP"
+  sudo test -f "$BACKUP"
+  sudo test ! -e "$STAGED"
+  sudo test ! -e "$ARCHIVE"
+  sudo python3 - "$BACKUP" <<'PY'
+import sqlite3
+import sys
+
+with sqlite3.connect(
+        f"file:{sys.argv[1]}?mode=ro&immutable=1", uri=True) as backup:
+    check = backup.execute("PRAGMA integrity_check").fetchone()[0]
+if check != "ok":
+    raise SystemExit(f"Backup validation failed: {check}")
+print("Backup is valid")
+PY
+  sudo install -o root -g root -m 600 "$BACKUP" "$STAGED"
+  sudo python3 - "$STAGED" <<'PY'
+import sqlite3
+import sys
+
+with sqlite3.connect(
+        f"file:{sys.argv[1]}?mode=ro&immutable=1", uri=True) as staged:
+    check = staged.execute("PRAGMA integrity_check").fetchone()[0]
+if check != "ok":
+    raise SystemExit(f"Staged database validation failed: {check}")
+PY
+  sudo mkdir -m 700 "$ARCHIVE"
+  sudo systemctl stop quota-gateway
+  if sudo test -e "$DB_DIR/quota.db"; then
+    sudo mv "$DB_DIR/quota.db" "$ARCHIVE/quota.db"
+  fi
+  for suffix in -wal -shm; do
+    if sudo test -e "$DB_DIR/quota.db$suffix"; then
+      sudo mv "$DB_DIR/quota.db$suffix" "$ARCHIVE/quota.db$suffix"
+    fi
+  done
+  sudo mv "$STAGED" "$DB_DIR/quota.db"
+  printf 'Old database and sidecars are preserved in %s\n' "$ARCHIVE"
+  sudo systemctl start quota-gateway
+)
+```
+
+The restore block uses `set -eu`: any failed validation, stop, move, or start
+ends the block immediately. It validates a staged replacement before stopping
+the service and uses unique paths that refuse to overwrite existing files. If
+the service does not start after replacement, leave it stopped and restore the
+preserved files. Substitute the exact archive path printed by the restore
+block:
+
+```bash
+( set -eu
+  DB_DIR=/var/lib/quota-gateway
+  ARCHIVE="$DB_DIR/quota.db.pre-restore-YYYY-MM-DD-HHMMSS"
+  sudo systemctl stop quota-gateway
+  sudo test -f "$ARCHIVE/quota.db"
+  sudo test ! -e "$ARCHIVE/quota.db.failed-restore"
+  if sudo test -e "$DB_DIR/quota.db"; then
+    sudo mv "$DB_DIR/quota.db" "$ARCHIVE/quota.db.failed-restore"
+  fi
+  for suffix in -wal -shm; do
+    if sudo test -e "$DB_DIR/quota.db$suffix"; then
+      sudo test ! -e "$ARCHIVE/quota.db.failed-restore$suffix"
+      sudo mv "$DB_DIR/quota.db$suffix" \
+        "$ARCHIVE/quota.db.failed-restore$suffix"
+    fi
+  done
+  sudo mv "$ARCHIVE/quota.db" "$DB_DIR/quota.db"
+  for suffix in -wal -shm; do
+    if sudo test -e "$ARCHIVE/quota.db$suffix"; then
+      sudo mv "$ARCHIVE/quota.db$suffix" "$DB_DIR/quota.db$suffix"
+    fi
+  done
+  sudo systemctl start quota-gateway
+)
+```
+
+Keep the backup file outside the live DB path. This procedure targets the
+packaged systemd service and its default DB path; custom `db_path` or service
+setups must use their configured path and unit name. An online DB backup does
+not include unrelated files in the DB directory, such as `firewall_config.json`;
+back up that file separately when needed.
 
 ---
 
@@ -658,6 +813,58 @@ either way.
 
 ---
 
+## Internet schedules (`quota/schedules.py`, `quota/schedule_nft.py`)
+
+Time-based internet cuts per person / device (issue #32).
+
+- **Model** (`quota/schedules.py`, pure): a schedule = name, enabled, `users`
+  (every device of each), `devices`, `windows` (`days` = Python weekdays,
+  `start`/`end` `HH:MM`; `end` < `start` runs past midnight and belongs to the
+  day it STARTS on; `24:00` = midnight), `skip_dates`, `paused_until` (bonus
+  time). Touching windows are merged so the dashboard shows the real end.
+  Stored as JSON in `settings.schedules`; the allowed sites in
+  `settings.schedule_sites`. A broken row is skipped, never fatal.
+- **Service**: `save_schedule` / `delete_schedule` / `pause_schedule` /
+  `set_schedule_sites`, `schedule_cuts()` = MAC -> `Cut(until, schedules)`
+  (the box itself is never cut, the protected Gateway user cannot be picked).
+- **Kernel** (`quota/schedule_nft.py`): its own table `inet quota_schedule`,
+  NOT flushed on service start, so scheduled devices stay off across a
+  restart and the collected allowed-site addresses survive (dnsmasq only adds
+  an address when it forwards a query, not from its cache). Sets `devs4`,
+  `devs6`, `macs` have `flags timeout`: each device is added with a timeout
+  equal to the end of its cut (+5 s), so the KERNEL frees it on time even if
+  the service is stopped. Forward chain at priority -5 (before
+  `quota_gateway`'s counters at 0, so dropped packets are never counted):
+  `ip saddr @devs4 ip daddr != @allow4 <local nets excluded> drop` + the
+  reverse direction + the `ip6` twins + `ether saddr @macs` for lease-less
+  devices. Every membership change is ONE `nft -f -` batch (flush + re-add),
+  cache-gated on (address, end) — no unblock window, no nft call when nothing
+  changed.
+- **Allowed sites**: `dns_rules.render_schedule_sites` writes
+  `/etc/dnsmasq.d/quota-schedule.conf` (`nftset=/a/b/…/4#inet#quota_schedule#allow4,6#…#allow6`,
+  20 domains per line) through the same `DnsRuleManager.apply` validation /
+  rollback path. Saving the list flushes `allow4/allow6` and restarts dnsmasq
+  so they refill. The allow list is shared by all schedules (one kernel set).
+- **Tick** (step 4): `_sync_schedules(ip_to_mac_all)` resolves the cuts and
+  programs the table; devices off by schedule are also denied on network
+  drives. API edits call it immediately (`schedule_apply`).
+- **Precedence**: a schedule cut wins over everything in `quota_gateway`
+  (always-allow / bypass, boosters, free mode): its chain runs first and drops
+  before any accept there. Intended: a bedtime is a bedtime.
+- **Allowed sites need the gateway's DNS**: `allow4/allow6` are only filled
+  when dnsmasq forwards the lookup. A device using its own resolver (Android
+  Private DNS, browser DoH) never fills them, so those sites stay blocked for
+  it during a cut. IPv6 rules mirror IPv4 (rule 9); validated in a real-kernel
+  lab for IPv4 + MAC only (the lab had no IPv6).
+- **Turning the gateway off** (`scripts/gateway_off.sh`) deletes
+  `quota_schedule` with the other tables, so no device stays cut until its
+  kernel timeout.
+- **Dashboard**: `/api/dashboard` adds `schedule: {until_ts, names}` per
+  device and `{until_ts, names, devices}` per user; page `web/js/pages/schedule.js`.
+- Limits: a cut STARTS only while the service runs (the tick adds the device);
+  the end is enforced by the kernel. DNS lookups to the box keep working
+  (input hook), so allowed sites resolve.
+
 ## Rogue devices & the ARP gateway-lock
 
 Because the router keeps WiFi and shares the client segment, a device can assign
@@ -776,6 +983,28 @@ the session down and re-dialing. An **auto-renew schedule** (`POST
 drops internet briefly) re-dials on its own. Both only run while ppp0 is
 actually **up** (a dead dial has nothing to renew into), and the last-renewed
 timestamp is persisted so a gateway restart never re-renews mid-schedule.
+
+### Request body inspection by the WAF
+
+`waf.max_body_bytes` (default 1 MiB) limits the bytes buffered to inspect
+`POST`, `PUT`, `PATCH`, and `DELETE` bodies. The WAF checks the actual byte
+count while reading, even when the client omits `Content-Length`. Strict mode
+returns HTTP 413 for an oversized body before the route runs. Log mode records
+the event and forwards the entire stream, including the bytes read before
+the limit was reached, without auto-banning the client. The local-subnet exemption and WAF off mode
+bypass inspection. Routes that accept large inputs still need their own limits
+when WAF blocking is disabled or exempted.
+
+In strict mode, the WAF keeps at most 4,096 active source/endpoint rate buckets
+and 4,096 source histories for auto-ban. Rate buckets expire after each
+endpoint's configured window. Auto-ban holds only the most recent
+`waf.auto_ban_after` timestamps per source and drops hits outside
+`waf.ban_window_seconds`. A five-second sweep removes expired state even
+without incoming requests. When the rate table is full, an untracked source
+on a rate-limited route receives 429 until a slot frees up. A full auto-ban
+table keeps its active histories. New sources are still blocked for WAF
+violations, but their hits do not accumulate toward a firewall ban until
+space becomes available.
 
 ### Tailscale remote access
 
@@ -1115,9 +1344,12 @@ The Local Share subsystem (`quota/local_share.py`, `web/share.html`, and the das
 
 - **Elimination of `python-multipart` Overhead**:
   Unlike standard form-data endpoints which require third-party C/Rust parsers or external libraries, file uploads leverage pure raw HTTP streaming via Starlette's `request.stream()`:
-  - Network bytes flow in 64 KB chunks directly from the incoming socket to disk (`data/local_share/<id>/<safe_name>`).
-  - Total process RAM usage remains $< 1\,\text{MB}$ regardless of whether transferring a small document or a 20 GB multi-file ISO/video.
+  - The application reads the request in chunks and writes directly to the gateway cache (`data/local_share/<id>/<safe_name>`). It does not buffer the entire file.
   - Raw client requests set the sanitized URI-encoded filename via `X-Filename: <encoded_name>` and standard `Content-Type`.
+- **Storage limits**:
+  - Each uploaded file, uncompressed folder member, and generated ZIP is limited to 4 GiB. Stored files, concurrent uploads, in-progress folder archives, and temporary download bundles share a 16 GiB cache limit. Payload writes also stop when they would leave less than 1 GiB free on the cache filesystem (the database, logs and updates live on the same disk).
+  - Limits are checked during streaming and ZIP creation, including the ZIP directory written at finalization. The API returns HTTP 413 and discards the rejected partial file or archive. After a folder upload fails, start a new folder session.
+  - Cache usage includes payload files already present at startup. Unfinished folder sessions held by the running process are discarded after 30 minutes of inactivity at the next cleanup pass.
 - **Atomic Index Persistence**:
   - Metadata is persisted in `data/local_share/index.json`.
   - Mutating operations (`save_file_stream`, `delete_file`, `save_text`, `cleanup_expired`) are synchronized behind an `asyncio.Lock()`.
@@ -1134,7 +1366,7 @@ The Local Share subsystem (`quota/local_share.py`, `web/share.html`, and the das
   - Household devices connected to the router's Wi-Fi or Ethernet LAN can freely upload, download, and share notes without requiring administrative credentials or session tokens.
   - Requesters arriving from external WAN addresses (in Strong WAN mode) are automatically denied with `403 Forbidden` unless possessing a cryptographically signed HMAC admin session cookie (`COOKIE_NAME`).
 - **CSRF & WAF Immunity on LAN**:
-  - LAN requests bypass strict WAN WAF body-size caps, enabling full-bandwidth gigabit file transfers without triggering false-positive rate-limit bans.
+  - LAN requests bypass WAN WAF body-size checks. Local Share enforces its storage limits independently.
 
 ### 3. Client Experience & Standalone Web Portal
 
@@ -1189,7 +1421,7 @@ The Local Share subsystem (`quota/local_share.py`, `web/share.html`, and the das
 - **`Content-Length` only for single files**:
   A multi-file/folder send is a ZIP the *sender* builds on the fly; it is larger than the sum of the announced file sizes. `GET /api/share/live/download/{id}` therefore omits `Content-Length` for names ending in `.zip` (chunked body); with a too-small length the server aborted the body and browsers reported a cancelled download. [`tests/test_local_share.py`]
 - **50 MB Live Direct Transfer Safety Clamp**:
-  To protect low-memory mobile browser engines from memory pressure or prolonged connection hangs during live Wi-Fi streaming, a strict $50\,\text{MB}$ payload limit is enforced. Both frontend interfaces (`initiateDashSendDirect`, `initiateSendDirect`, and multi-folder staging confirm) calculate total payload size upfront and immediately warn users via friendly toast notices if exceeded. The backend WebSocket relay endpoint (`/api/share/live/ws`) additionally enforces this ceiling on `transfer-request` messages, rejecting payloads $> 50\,\text{MB}$ with a descriptive `transfer-error` response. Larger files and folders are routed to standard Local Share upload.
+  To protect low-memory mobile browser engines from memory pressure or prolonged connection hangs during live Wi-Fi streaming, a strict $50\,\text{MB}$ payload limit is enforced. Both frontend interfaces (`initiateDashSendDirect`, `initiateSendDirect`, and multi-folder staging confirm) calculate total payload size upfront and immediately warn users via friendly toast notices if exceeded. The backend WebSocket relay endpoint (`/api/share/live/ws`) additionally enforces this ceiling on `transfer-request` messages, rejecting payloads $> 50\,\text{MB}$ with a descriptive `transfer-error` response. Larger files and folders are routed to standard Local Share upload, subject to its storage limits.
 
 ---
 
@@ -1868,6 +2100,10 @@ sets a session cookie. The dashboard client uses the same endpoints.
 | POST | `/api/system/off` | turn the whole gateway off (System → Power): `{"poweroff": bool}` → `quota/power.py` schedules `scripts/gateway_off.sh` via `systemd-run --on-active=3` (so it outlives this service), which stops + disables `quota-wan-ppp`, `dnsmasq`, `quota-gateway`, deletes the `quota_gateway`/`quota_firewall`/`quota_nat` tables and the tc qdiscs, and optionally powers the machine off. Back on: `sudo systemctl enable --now dnsmasq quota-gateway`. 500 when `systemd-run`/the script is missing |
 | POST | `/api/system/restart` | `{"machine": bool}` → `quota/power.py::schedule_restart`: `systemd-run --on-active=3 systemctl restart quota-gateway` (or `systemctl reboot`) |
 | POST | `/api/system/factory-reset` | `{"keep_users": bool, "confirm": "RESET"}` (422 without the exact word) → `systemd-run` runs `quota/factory_reset.py` (stdlib only, run as a script): stop service → backup to `<db dir>/backups/quota-<time>.db` → delete rows from every table (keep `users`, `devices`, `static_leases`, bundle + usage tables with `keep_users`) and every setting except the network ones (`topology*`, `pppoe_*`, `wan_if`; plus login/TLS keys with `keep_users`) → remove `/etc/quota-gateway/smb-credentials` → start service |
+| GET | `/api/schedules` | `{schedules: [{id, name, enabled, users, devices, windows, skip_dates, paused_until, device_count, state: {active, until_ts, paused, skipped_today, next_start_ts, next_end_ts}}], sites, now_ts, utc_offset_min}` |
+| POST / PUT / DELETE | `/api/schedules`, `/api/schedules/{id}` | `{name, enabled, users, devices, windows: [{days, start, end}], skip_dates}` validated by `quota/schedules.py` (422 bad input, 404 unknown id); returns the list above and programs the kernel at once |
+| POST | `/api/schedules/{id}/pause` | `{minutes: 0..1440}` bonus time (0 ends it) |
+| PUT | `/api/schedule-sites` | `{sites: [domains]}` always-allowed sites (normalized like domain rules, max 200) |
 | GET | `/api/disks` | `quota/disk_share.py`: `{samba, cifs, installing, install_error, disks: [lsblk filesystems, system disk excluded], shares: [{name, source, uuid\|remote, writable, present, active}]}` |
 | POST | `/api/disks/share` | `{"source": "disk", "uuid", "name", "writable"}` or `{"source": "network", "remote": "//host/share", "user", "password", "name", "writable"}` → stored in `settings.disk_shares` (password only in a 0600 file under `/etc/quota-gateway/smb-credentials/`), mounted under `/srv/quota-share/<name>` (disk by UUID, network with `mount -t cifs`), published in `/etc/samba/quota-shares.conf`, included as the FIRST line of `smb.conf` so its `[global]` applies to every share: `interfaces = lo <LAN NIC>` + `bind interfaces only` (never `ppp0`), `hosts allow` = loopback + the engine's local IPv4 networks `EXCEPT` every cut-off device IP (fed by the tick via `DiskShareManager.set_clients`, cache-gated, `smbcontrol smbd reload-config`), guest access as the system user `quotashare` (not root), `follow symlinks = no`, `wide links = no`. Per share: `access="selected"` adds a share-level `hosts allow` of the chosen devices' current IPs; per-device levels go in `/etc/samba/quota-share.d/<share>-<ip>.conf` via `include = …-%I.conf`. A minute heal loop unmounts unplugged disks, remounts them when back, and retries unreachable CIFS folders every 5 min (mount bounded to 20 s, startup never waits). IPv4 only 409 duplicate name/disk/folder, 404 unknown or system disk, 422 bad name/remote |
 | PUT | `/api/disks/share/{name}` | change who may open a share: `{"access": "all"\|"selected", "writable", "devices": {mac: "rw"\|"ro"\|"none"}}` (MACs normalized, bad entries dropped); remounts when the read/write need changes |
@@ -1986,6 +2222,10 @@ QuotaManager/
 │   │                         #   blocklist presets, per-client DNS-server overrides,
 │   │                         #   resolve_domain_status (History-tab filter badges) —
 │   │                         #   generated dnsmasq config, no new service
+│   ├── schedules.py          # internet schedules: windows, skip dates, bonus time,
+│   │                         #   who is off right now (pure, no I/O)
+│   ├── schedule_nft.py       # ScheduleFirewall: inet quota_schedule table, devices
+│   │                         #   with kernel timeouts, allowed-site sets (nftset)
 │   ├── vpn_manager.py        # VpnManager: sing-box process supervisor, Clash API (9090),
 │   │                         #   traffic metrics, policy routing, persistent auto-healing
 │   ├── vpn_parser.py         # parse_vpn_link (VLESS/VMess/Trojan/Shadowsocks/WireGuard),
@@ -2061,6 +2301,7 @@ QuotaManager/
     │                         #   auto-detect, spawn argv, respawn/download gates,
     │                         #   stop-on-off, arch + checksum refusal
     ├── test_dns_rules.py     # hosts/ABP parsing, wildcard scopes, rendering
+    ├── test_schedules.py     # schedule time math, kernel batches, nftset fragment, service
     ├── test_latency_probe.py # ARP-RTT classifier math + sweep wiring (fakes)
     ├── test_wifi_probe.py    # airodump CSV parse + probe snapshot + thread smoke
     ├── test_updater.py       # version math + CHANGELOG parse + GitHub check +

@@ -198,6 +198,7 @@ class GuestVoucher:
     used_mac: str = ""
     comment: str = ""
     revoked_at: Optional[float] = None
+    allowance_sync_pending: bool = False
 
 
 @dataclass
@@ -482,7 +483,10 @@ CREATE TABLE IF NOT EXISTS guest_vouchers (
     used_at    REAL,
     used_mac   TEXT NOT NULL DEFAULT '',
     comment    TEXT NOT NULL DEFAULT '',
-    revoked_at REAL
+    revoked_at REAL,
+    used_user_id INTEGER,
+    used_device_id INTEGER,
+    allowance_sync_pending INTEGER NOT NULL DEFAULT 0
 );
 
 -- Bundle recharges queue (add-on packs)
@@ -555,6 +559,18 @@ class Database:
             await self._conn.execute(
                 "ALTER TABLE guest_vouchers ADD COLUMN revoked_at REAL")
             await self._conn.commit()
+        for column, definition in (
+                ("used_user_id", "INTEGER"),
+                ("used_device_id", "INTEGER"),
+                ("allowance_sync_pending", "INTEGER NOT NULL DEFAULT 0")):
+            if column not in voucher_columns:
+                await self._conn.execute(
+                    f"ALTER TABLE guest_vouchers ADD COLUMN {column} {definition}")
+                await self._conn.commit()
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_guest_vouchers_allowance_sync_pending "
+            "ON guest_vouchers(code) WHERE allowance_sync_pending=1")
+        await self._conn.commit()
         # Legacy cleanup: the old guest-deletion `suppressed_macs` table (v20,
         # pre-blacklist) is orphaned — delete->deny-list replaced it and nothing
         # references it anymore. Idempotent; a fresh DB simply has no such table.
@@ -748,15 +764,37 @@ class Database:
             "AND name='domain_rules'")
         if row is None:
             return  # nothing to migrate yet — SCHEMA creates the fixed table
-        cols = await self.conn.execute_fetchall("PRAGMA table_info(domain_rules)")
+        # table_info deliberately omits generated/hidden columns. scope_key is
+        # a STORED generated column, so use table_xinfo to recognize the fixed
+        # schema on every restart.
+        cols = await self.conn.execute_fetchall("PRAGMA table_xinfo(domain_rules)")
+        residue = await self._fetch_one(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='domain_rules_old'")
+        if residue is not None:
+            # An older build's rebuild was interrupted (power cut) between the
+            # RENAME and the copy. Never stop startup over it: a gateway that
+            # does not start counts and blocks nobody. Recover the rows when
+            # the old table has the known shape, otherwise keep it untouched
+            # and tell the admin.
+            await self._recover_domain_rules_residue(cols)
+            return
         if any(c["name"] == "scope_key" for c in cols):
             return  # already the fixed shape
         log.warning("domain_rules predates the scope_key fix — rebuilding "
                    "the table and dropping any duplicate global rules the "
                    "old NULL-scope upsert bug let through")
-        await self._conn.executescript("""
-            ALTER TABLE domain_rules RENAME TO domain_rules_old;
-            CREATE TABLE domain_rules (
+        sequence = await self._fetch_one(
+            "SELECT seq FROM sqlite_sequence WHERE name='domain_rules'")
+        old_high_water = int(sequence["seq"]) if sequence is not None else 0
+        # Keep DDL, copy, and cleanup in one transaction. executescript() would
+        # implicitly commit and could strand data in domain_rules_old if a
+        # later statement failed.
+        await self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            await self._conn.execute(
+                "ALTER TABLE domain_rules RENAME TO domain_rules_old")
+            await self._conn.execute("""CREATE TABLE domain_rules (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 scope      TEXT NOT NULL DEFAULT 'global',
                 scope_id   INTEGER,
@@ -768,20 +806,91 @@ class Database:
                 source     TEXT NOT NULL DEFAULT 'manual',
                 created_at REAL NOT NULL,
                 UNIQUE(scope, scope_key, domain, action)
-            );
-        """)
-        await self._conn.execute("""
+            )""")
+            await self._conn.execute("""
             INSERT INTO domain_rules
-                (scope, scope_id, action, domain, target_ip, enabled, source, created_at)
-            SELECT scope, scope_id, action, domain, target_ip, enabled, source, created_at
+                (id, scope, scope_id, action, domain, target_ip, enabled, source, created_at)
+            SELECT id, scope, scope_id, action, domain, target_ip, enabled, source, created_at
             FROM domain_rules_old
             WHERE id IN (
                 SELECT MAX(id) FROM domain_rules_old
                 GROUP BY scope, COALESCE(scope_id, 0), domain, action
             )
-        """)
-        await self._conn.execute("DROP TABLE domain_rules_old")
-        await self._conn.commit()
+            """)
+            await self._conn.execute("DROP TABLE domain_rules_old")
+            new_sequence = await self._fetch_one(
+                "SELECT seq FROM sqlite_sequence WHERE name='domain_rules'")
+            high_water = max(
+                old_high_water,
+                int(new_sequence["seq"]) if new_sequence is not None else 0)
+            # Preserve AUTOINCREMENT's historical high-water mark too. The
+            # greatest ID may have been deleted before this rebuild; reusing
+            # it would make an old ID refer to a different DNS rule.
+            await self._conn.execute(
+                "DELETE FROM sqlite_sequence WHERE name='domain_rules'")
+            await self._conn.execute(
+                "INSERT INTO sqlite_sequence(name, seq) VALUES ('domain_rules', ?)",
+                (high_water,))
+            await self._conn.commit()
+        except Exception:
+            await self._conn.rollback()
+            raise
+
+    _DOMAIN_RULE_COLS = ("id", "scope", "scope_id", "action", "domain",
+                         "target_ip", "enabled", "source", "created_at")
+
+    async def _recover_domain_rules_residue(self, cols: list[Any]) -> None:
+        """Merge ``domain_rules_old`` (left by an interrupted rebuild) back
+        into the fixed ``domain_rules``. Rows already in ``domain_rules`` win
+        (same id or same rule); duplicates inside the old table keep the newest
+        row, like the normal rebuild. Never raises: an unknown shape is kept
+        as-is with an error event for the admin."""
+        old_cols = {c["name"] for c in await self.conn.execute_fetchall(
+            "PRAGMA table_xinfo(domain_rules_old)")}
+        fixed = any(c["name"] == "scope_key" for c in cols)
+        if not fixed or not set(self._DOMAIN_RULE_COLS) <= old_cols:
+            log.error("domain_rules_old (left by an interrupted upgrade) has "
+                      "an unexpected shape; kept untouched for manual recovery")
+            try:
+                await self.add_event(
+                    "DNS rules: an interrupted upgrade left an old copy of the "
+                    "website rules (table domain_rules_old). It was kept as is; "
+                    "re-add any missing rule or restore a backup.", "warning")
+            except Exception:  # noqa: BLE001 - never block startup
+                log.exception("could not record the domain_rules_old event")
+            return
+        names = ", ".join(self._DOMAIN_RULE_COLS)
+        before = await self._fetch_one("SELECT COUNT(*) AS n FROM domain_rules")
+        await self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            await self._conn.execute(f"""
+                INSERT OR IGNORE INTO domain_rules ({names})
+                SELECT {names} FROM domain_rules_old
+                WHERE id IN (
+                    SELECT MAX(id) FROM domain_rules_old
+                    GROUP BY scope, COALESCE(scope_id, 0), domain, action
+                )""")
+            top = await self._fetch_one(
+                "SELECT MAX(id) AS m FROM domain_rules_old")
+            seq = await self._fetch_one(
+                "SELECT seq FROM sqlite_sequence WHERE name='domain_rules'")
+            high = max(int(top["m"] or 0) if top else 0,
+                       int(seq["seq"]) if seq else 0)
+            await self._conn.execute("DROP TABLE domain_rules_old")
+            await self._conn.execute(
+                "DELETE FROM sqlite_sequence WHERE name='domain_rules'")
+            await self._conn.execute(
+                "INSERT INTO sqlite_sequence(name, seq) VALUES ('domain_rules', ?)",
+                (high,))
+            await self._conn.commit()
+        except Exception:  # noqa: BLE001 - keep the residue, keep starting
+            await self._conn.rollback()
+            log.exception("could not recover domain_rules_old; kept untouched")
+            return
+        after = await self._fetch_one("SELECT COUNT(*) AS n FROM domain_rules")
+        log.warning("recovered %d website rule(s) left by an interrupted "
+                    "upgrade (domain_rules_old)",
+                    int(after["n"]) - int(before["n"]))
 
     async def _backfill_users(self) -> None:
         """Give every device without a user its own user (v2 migration).
@@ -1329,6 +1438,32 @@ class Database:
         )
         await self.conn.commit()
 
+    async def set_bundle_allowances(self, bundle: Bundle) -> None:
+        """Persist a recomputed snapshot without overwriting bundle policy."""
+        await self.conn.execute(
+            """INSERT INTO bundle_config
+                   (id, total_gb, reset_day, period_type, allowances, period_start, period_end)
+               VALUES (1, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 allowances=excluded.allowances, period_end=excluded.period_end""",
+            (bundle.total_gb, bundle.reset_day, bundle.period_type,
+             json.dumps(bundle.allowances), bundle.period_start, bundle.period_end))
+        await self.conn.commit()
+
+    async def set_bundle_period(self, bundle: Bundle) -> None:
+        """Persist a new period while preserving concurrently edited policy."""
+        await self.conn.execute(
+            """INSERT INTO bundle_config
+                   (id, total_gb, reset_day, period_type, allowances, period_start, period_end)
+               VALUES (1, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 allowances=excluded.allowances,
+                 period_start=excluded.period_start,
+                 period_end=excluded.period_end""",
+            (bundle.total_gb, bundle.reset_day, bundle.period_type,
+             json.dumps(bundle.allowances), bundle.period_start, bundle.period_end))
+        await self.conn.commit()
+
     # -- bundle recharges (add-on packs) --------------------------------------
 
     async def create_recharge(self, gb: float,
@@ -1481,17 +1616,23 @@ class Database:
         """Insert or update usage records for multiple devices in a single batch transaction."""
         if not records:
             return
-        await self.conn.executemany(
-            """INSERT INTO usage_daily (device_id, date, up_bytes, down_bytes)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(device_id, date) DO UPDATE SET
-                 up_bytes = up_bytes + excluded.up_bytes,
-                 down_bytes = down_bytes + excluded.down_bytes""",
-            records,
-        )
-        if self.free_mode:
-            await self.conn.executemany(self._FREE_UPSERT, records)
-        await self.conn.commit()
+        try:
+            await self.conn.executemany(
+                """INSERT INTO usage_daily (device_id, date, up_bytes, down_bytes)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(device_id, date) DO UPDATE SET
+                     up_bytes = up_bytes + excluded.up_bytes,
+                     down_bytes = down_bytes + excluded.down_bytes""",
+                records,
+            )
+            if self.free_mode:
+                await self.conn.executemany(self._FREE_UPSERT, records)
+            await self.conn.commit()
+        except BaseException:
+            # all or nothing: a half-applied batch must not stay open on the
+            # shared connection (the caller keeps the records and retries)
+            await self.conn.rollback()
+            raise
 
     async def add_lan_usage_batch(self, records: list[tuple[int, str, int, int]]) -> None:
         """Add LOCAL (LAN) byte deltas per (device, day). Monitoring only."""
@@ -2125,6 +2266,20 @@ class Database:
         await self.conn.commit()
         return cur.rowcount > 0
 
+    async def pending_guest_voucher_allowance_sync(self) -> list[str]:
+        rows = await self.conn.execute_fetchall(
+            "SELECT code FROM guest_vouchers WHERE allowance_sync_pending=1")
+        return [str(row["code"]) for row in rows]
+
+    async def complete_guest_voucher_allowance_sync(self, codes: list[str]) -> None:
+        if not codes:
+            return
+        placeholders = ",".join("?" for _ in codes)
+        await self.conn.execute(
+            f"UPDATE guest_vouchers SET allowance_sync_pending=0 "
+            f"WHERE allowance_sync_pending=1 AND code IN ({placeholders})", codes)
+        await self.conn.commit()
+
     async def redeem_guest_voucher_for_device(
             self, code: str, mac: str) -> tuple[bool, str, Optional[float]]:
         """Atomically claim a voucher and approve its eligible pending guest.
@@ -2154,17 +2309,13 @@ class Database:
             settings = {str(item["key"]): str(item["value"])
                         for item in await settings_cursor.fetchall()}
             await settings_cursor.close()
-            if settings.get("guest_mode", "0") != "1":
-                await conn.rollback()
-                return False, "guest_mode_disabled", None
-            if settings.get("stop_new_connections", "0") == "1":
-                await conn.rollback()
-                return False, "new_guests_paused", None
-
             cursor = await conn.execute(
                 """SELECT v.quota_gb, v.used_at, v.expires_at, v.revoked_at,
+                          v.used_mac, v.used_user_id, v.used_device_id,
                           d.id device_id, d.user_id, d.block_state device_state,
-                          u.guest, u.block_state user_state
+                          d.quota_mode device_quota_mode, d.fixed_gb device_fixed_gb,
+                          u.guest, u.block_state user_state,
+                          u.quota_mode user_quota_mode, u.fixed_gb user_fixed_gb
                    FROM guest_vouchers v
                    JOIN devices d ON lower(d.mac)=?
                    JOIN users u ON u.id=d.user_id
@@ -2185,10 +2336,6 @@ class Database:
             if denied is not None:
                 await conn.rollback()
                 return False, "device_blocked", None
-            if not is_pending_guest(
-                    bool(row["guest"]), row["user_state"], row["device_state"]):
-                await conn.rollback()
-                return False, "guest_not_pending", None
 
             count_cursor = await conn.execute(
                 "SELECT COUNT(*) FROM devices WHERE user_id=?",
@@ -2198,19 +2345,47 @@ class Database:
             if device_count != 1:
                 await conn.rollback()
                 return False, "guest_account_shared", None
-            if row["used_at"] is not None or row["revoked_at"] is not None:
+            if row["used_at"] is not None:
+                same_claim = (row["used_mac"] == mac_clean
+                              and row["used_user_id"] == row["user_id"]
+                              and row["used_device_id"] == row["device_id"])
+                same_guest = (
+                    bool(row["guest"])
+                    and row["user_state"] == BLOCK_OK
+                    and row["device_state"] == BLOCK_OK
+                    and row["user_quota_mode"] == QUOTA_FIXED
+                    and row["device_quota_mode"] == QUOTA_FIXED
+                    and row["user_fixed_gb"] == row["quota_gb"]
+                    and row["device_fixed_gb"] == row["quota_gb"])
+                await conn.rollback()
+                if same_claim and same_guest:
+                    return True, "already_redeemed", float(row["quota_gb"])
+                return False, "guest_not_pending", None
+            if row["revoked_at"] is not None:
                 await conn.rollback()
                 return False, "voucher_invalid", None
             if row["expires_at"] is not None and row["expires_at"] <= now:
                 await conn.rollback()
                 return False, "voucher_invalid", None
 
+            if settings.get("guest_mode", "0") != "1":
+                await conn.rollback()
+                return False, "guest_mode_disabled", None
+            if settings.get("stop_new_connections", "0") == "1":
+                await conn.rollback()
+                return False, "new_guests_paused", None
+            if not is_pending_guest(
+                    bool(row["guest"]), row["user_state"], row["device_state"]):
+                await conn.rollback()
+                return False, "guest_not_pending", None
+
             quota_gb = float(row["quota_gb"])
             claim = await conn.execute(
-                """UPDATE guest_vouchers SET used_at=?, used_mac=?
+                """UPDATE guest_vouchers SET used_at=?, used_mac=?,
+                          used_user_id=?, used_device_id=?, allowance_sync_pending=1
                    WHERE code=? AND used_at IS NULL AND revoked_at IS NULL
                      AND (expires_at IS NULL OR expires_at > ?)""",
-                (now, mac_clean, code_clean, now))
+                (now, mac_clean, row["user_id"], row["device_id"], code_clean, now))
             if claim.rowcount != 1:
                 await conn.rollback()
                 return False, "voucher_invalid", None
@@ -2337,6 +2512,7 @@ def _row_to_guest_voucher(row: Any) -> GuestVoucher:
         comment=row["comment"] or "",
         revoked_at=(float(row["revoked_at"])
                     if row["revoked_at"] is not None else None),
+        allowance_sync_pending=bool(row["allowance_sync_pending"]),
     )
 
 

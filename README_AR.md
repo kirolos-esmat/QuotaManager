@@ -1,21 +1,57 @@
 <p align="center">
-  <img src="docs/logo/logo.svg" width="96" height="96" alt="شعار Quota Manager">
+  <img src="docs/brand/banner.png" alt="Netrex — إنترنت عادل لكل اللي في البيت" width="100%">
 </p>
 
-<h1 align="center">Quota Manager</h1>
-
-<p align="center">
-  وزّع باقة الإنترنت المحدودة بعدل بين كل اللي في البيت.
-</p>
-
-<p align="center">
-  <a href="README.md"><img src="https://img.shields.io/badge/English-English-blue" alt="English"></a>
-  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT">
+<p align="center" dir="rtl">
+  <b>بوابة منزلية مفتوحة المصدر بتوزّع باقة الإنترنت المحدودة بعدل — لكل شخص، على كل أجهزته.</b><br>
+  استهلاك لحظي، وحصص بتتنفّذ فعلًا، وتحكم في السرعة، وحجب إعلانات، وVPN ووصول من برّه البيت، في لوحة واحدة. بالعربي والإنجليزي.
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/overview-ar.png" alt="لوحة تحكم Quota Manager — نظرة عامة"><br><br>
-  <img src="docs/screenshots/people-ar.png" alt="الأشخاص والأجهزة">
+  <a href="https://github.com/UserJoo9/Netrex/releases/latest"><img src="https://img.shields.io/github/v/release/UserJoo9/Netrex?style=for-the-badge&label=release&color=2563EB&labelColor=0B1220" alt="آخر إصدار"></a>
+  <a href="https://github.com/UserJoo9/Netrex/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/UserJoo9/Netrex/ci.yml?branch=main&style=for-the-badge&label=tests&labelColor=0B1220" alt="الاختبارات"></a>
+  <a href="https://github.com/UserJoo9/Netrex/stargazers"><img src="https://img.shields.io/github/stars/UserJoo9/Netrex?style=for-the-badge&color=22D3EE&labelColor=0B1220" alt="النجوم"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22D3EE?style=for-the-badge&labelColor=0B1220" alt="رخصة MIT"></a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Debian%20·%20Ubuntu%20·%20Kali-supported-0B1220?style=flat-square&logo=debian&logoColor=white" alt="Debian, Ubuntu, Kali">
+  <img src="https://img.shields.io/badge/Fedora-supported-0B1220?style=flat-square&logo=fedora&logoColor=white" alt="Fedora">
+  <img src="https://img.shields.io/badge/Arch-supported-0B1220?style=flat-square&logo=archlinux&logoColor=white" alt="Arch">
+  <img src="https://img.shields.io/badge/Raspberry%20Pi-supported-0B1220?style=flat-square&logo=raspberrypi&logoColor=white" alt="Raspberry Pi">
+  <img src="https://img.shields.io/badge/OpenWrt-supported-0B1220?style=flat-square&logo=openwrt&logoColor=white" alt="OpenWrt">
+</p>
+
+<p align="center" dir="rtl">
+  <a href="#التثبيت"><b>التثبيت</b></a> ·
+  <a href="#الإعداد-الأول"><b>الإعداد الأول</b></a> ·
+  <a href="#الاستخدام"><b>المميزات</b></a> ·
+  <a href="#حل-المشاكل"><b>المساعدة</b></a> ·
+  <a href="Structure_README.md"><b>دليل المطوّرين</b></a> ·
+  <a href="README.md"><b>English</b></a>
+</p>
+
+<div dir="rtl">
+
+> [!NOTE]
+> **Quota Manager بقى اسمه Netrex.** نفس المشروع ونفس المميزات ونفس الإعدادات، الاسم بس اللي اتغيّر. الأجهزة المتثبّت عليها البرنامج بتتحدّث عادي من اللوحة أو من apt.
+
+</div>
+
+<p align="center">
+  <img src="docs/screenshots/overview-ar.png" alt="لوحة تحكم Netrex — نظرة عامة" width="100%">
+</p>
+
+<table dir="rtl">
+  <tr>
+    <td width="33%" valign="top"><b>📊 عادل من الأساس</b><br>كل شخص بياخد عدد جيجا ثابت أو نصيب متساوي. كل أجهزته بتسحب منه، ولما يخلص أجهزته هو بس اللي بتقف.</td>
+    <td width="33%" valign="top"><b>⚡ لحظي ولحد الجهاز</b><br>مين بيستخدم إيه دلوقتي، وتاريخ يومي، وأكتر المواقع، وحركة الإنترنت والشبكة الداخلية — متعدّة من نواة لينكس نفسها.</td>
+    <td width="33%" valign="top"><b>🛡️ تحكم في البيت كله</b><br>تحديد سرعات، وحجب إعلانات ومحتوى، وجدار حماية، وقسائم ضيوف، وVPN لأشخاص بعينهم، ووصول من برّه بـ Tailscale.</td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/people-ar.png" alt="الأشخاص والأجهزة" width="100%">
 </p>
 
 <div dir="rtl">
@@ -38,7 +74,7 @@
 جهاز صغير شغال طول الوقت بيتحط بين الراوتر وأجهزتك. الراوتر بيفضل بيبث الواي فاي، والجهاز ده بيدّي العناوين ويعدّ الاستهلاك.
 
 <p align="center">
-  <img src="docs/diagrams/AR_sketch_diagram.png" width="640" alt="طريقة اتصال Quota Manager">
+  <img src="docs/diagrams/AR_sketch_diagram.png" width="640" alt="طريقة اتصال Netrex">
 </p>
 
 ---
@@ -66,9 +102,9 @@
 ```bash
 sudo apt-get update
 sudo install -d /etc/apt/keyrings
-curl -fsSL https://UserJoo9.github.io/QuotaManager/quota-manager.gpg | \
+curl -fsSL https://UserJoo9.github.io/Netrex/quota-manager.gpg | \
   sudo gpg --dearmor -o /etc/apt/keyrings/quota-manager.gpg
-echo "deb [signed-by=/etc/apt/keyrings/quota-manager.gpg] https://UserJoo9.github.io/QuotaManager stable main" | \
+echo "deb [signed-by=/etc/apt/keyrings/quota-manager.gpg] https://UserJoo9.github.io/Netrex stable main" | \
   sudo tee /etc/apt/sources.list.d/quota-manager.list
 sudo apt-get update
 sudo apt-get install quota-manager
@@ -76,7 +112,7 @@ sudo apt-get install quota-manager
 
 <div dir="rtl">
 
-تفضّل ملف واحد؟ نزّل `quota-manager_<version>_all.deb` من [الإصدارات](https://github.com/UserJoo9/QuotaManager/releases) ونفّذ `sudo apt install ./quota-manager_*_all.deb`.
+تفضّل ملف واحد؟ نزّل `quota-manager_<version>_all.deb` من [الإصدارات](https://github.com/UserJoo9/Netrex/releases) ونفّذ `sudo apt install ./quota-manager_*_all.deb`.
 
 بعدها كمّل على [الإعداد الأول](#الإعداد-الأول).
 
@@ -127,7 +163,7 @@ OpenWrt 22.03+ وذاكرة 128MB أو أكتر (في الراوترات الص�
 </div>
 
 ```bash
-wget -O /tmp/install_openwrt.sh https://raw.githubusercontent.com/UserJoo9/QuotaManager/main/scripts/install_openwrt.sh
+wget -O /tmp/install_openwrt.sh https://raw.githubusercontent.com/UserJoo9/Netrex/main/scripts/install_openwrt.sh
 sh /tmp/install_openwrt.sh
 ```
 
@@ -200,6 +236,7 @@ http://192.168.2.1:8080
 - **زرار WAN | LAN** فوق رسم النظرة العامة: نفس السرعة اللحظية والاستهلاك اليومي وأعلى الأجهزة، للإنترنت أو للترافيك جوه البيت (NAS، الراوتر، البوابة نفسها).
 - **قسائم الضيوف:** من **الشبكة** ← *قسائم الضيوف*، اعمل كود لمرة واحدة بحصة بالجيجا (ومعاه تاريخ انتهاء أو ملاحظة لو حبيت). الضيف المستني في صفحة الانتظار بيكتب الكود ويأخد الحصة فورًا من غير ما توافق عليه بإيدك. كل كود بيشتغل مرة واحدة، والأكواد اللي ما اتستخدمتش تقدر تلغيها من نفس القايمة. الضيوف المستنيين بيظهروا *بانتظار الموافقة* في الناس والأجهزة.
 - **المشاركة**: اسحب ملفات أو فولدرات في صفحة المشاركة، أو ابعتها مباشرة لجهاز تاني على الواي فاي (لحد 50 ميجا؛ لو أكتر من ملف أو فولدر بتوصل ZIP واحد).
+- **مواعيد الإنترنت** (صفحة جديدة): اقفل الإنترنت في أوقات محددة لأشخاص أو أجهزة معينة، زي *ليالي الدراسة* من 11 بالليل لـ 7 الصبح من الحد للخميس. ابدأ من خطة جاهزة أو حدد مواعيدك بنفسك (الوقت ممكن يعدّي نص الليل)، وحدد أيام الإجازات، وادي **وقت إضافي** (+15 أو +30 أو +60 دقيقة) من غير ما تعدّل الجدول، واكتب المواقع اللي تفضل **مسموحة دايماً** (منصة المدرسة، مواقع المذاكرة). كارت الجهاز بيبين النت هيرجع إمتى، والشبكة الداخلية بتفضل شغالة. البوابة بترجّع النت لكل جهاز في ميعاده لوحدها حتى لو الخدمة عملت ريستارت. المواقع المسموحة بتفتح بس على الأجهزة اللي بتستخدم DNS البوابة (اقفل Private DNS أو الـ DNS الآمن على الجهاز).
 - **أقراص على الشبكة** (صفحة المشاركة): وصّل هارد بالبوابة ودوس *مشاركة*، أو ضيف فولدر متشارك على كمبيوتر تاني أو على الراوتر (`//192.168.1.5/Movies`). الأجهزة تفتحه على `\\192.168.2.1\<الاسم>` (ويندوز) أو `smb://192.168.2.1/<الاسم>` من غير باسورد. من زرار **الصلاحيات** في كل مشاركة تختار مين يدخل (كل الأجهزة اللي عندها نت، أو أجهزة إنت تختارها)، وتدي أي جهاز قراءة وكتابة أو قراءة بس أو تمنعه. الأجهزة المقطوع عنها النت عمرها ما بتدخل، والمشاركة بتشتغل على شبكة البيت بس. أول مرة الصفحة هتعرض تثبيت Samba. المشاركات بترجع لوحدها بعد الريستارت أو لما الهارد يتركّب تاني.
 - **إعادة التشغيل وضبط المصنع والإيقاف** (النظام ← التشغيل): أعد تشغيل البوابة أو الجهاز كله. ضبط المصنع بيرجّع الإعدادات زي أول تثبيت من غير ما تمسح البرنامج (علّم *احتفظ بالأشخاص والأجهزة* علشان الأشخاص والأجهزة والباقة واستهلاك الشهر والباسورد يفضلوا؛ وضع الخط وبيانات PPPoE بيفضلوا دايمًا، وبتتعمل نسخة احتياطية من قاعدة البيانات في `/var/lib/quota-gateway/backups/` الأول). الإيقاف بيقفل البوابة وتفضل مقفولة بعد الريستارت (رجّع DHCP في الراوتر الأول؛ وعلشان تشغّلها تاني: `sudo systemctl enable --now dnsmasq quota-gateway`).
 - الأزرار الخطيرة (طرد، بلاك ليست، تفعيل HTTPS، حذف عنصر من قايمة سماح/حظر، مسح الكل) **بتتطلب ضغطتين** — التانية هي التأكيد.
@@ -220,7 +257,17 @@ sudo apt purge quota-manager                                               # إ�
 
 <div dir="rtl">
 
-بياناتك في `/var/lib/quota-gateway/quota.db` — انسخها من وقت للتاني كنسخة احتياطية.
+بياناتك موجودة في `/var/lib/quota-gateway/quota.db`. عشان تاخد نسخة احتياطية منها (آمن والبوابة شغالة):
+
+</div>
+
+```bash
+sudo python3 -c "import sqlite3; sqlite3.connect('/var/lib/quota-gateway/quota.db').backup(sqlite3.connect('/root/netrex-backup.db'))"
+```
+
+<div dir="rtl">
+
+ما تنسخش `quota.db` بـ `cp` والبوابة شغالة: آخر التغييرات ممكن تكون لسه في ملف جانبي والنسخة تطلع بايظة. استرجاع النسخة موجود في [دليل النسخ والاسترجاع](Structure_README.md#sqlite-backup-and-restore).
 
 ## حل المشاكل
 

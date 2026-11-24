@@ -5,6 +5,16 @@ belongs, and which mistakes already cost a real outage. Deep technical detail li
 `Structure_README.md`; the old v0.2.1 audit is archived in
 `docs/legacy-system-audit-v0.2.1.md` (historical, partly stale).
 
+## 0. Name: Netrex (formerly Quota Manager)
+
+The user-facing name is **Netrex** (UI, titles, READMEs, release notes, TOTP issuer,
+passkey display name). Internal identifiers deliberately KEEP the old name so
+existing installs, packages and the apt repo keep working: package `quota-manager`,
+`/opt/quota-manager`, services `quota-gateway`/`quota-wan-ppp`, `/etc/quota-gateway`,
+`/var/lib/quota-gateway`, nft tables `quota_*`, release asset names
+`quota-manager_*`, the apt key `quota-manager.gpg`, apt `Origin`/`Label: Quota Manager`
+(changing them makes apt refuse the repo), and the passkey `USER_ID`. Don't rename those.
+
 ## 1. What this is
 
 A Linux gateway (old laptop, Kali/Debian) that splits ONE metered internet bundle
@@ -115,6 +125,7 @@ nftables.conf, IPv6 host config).
 | `quota/firewall.py` | `quota_firewall` table: posture, rules, bans, port-forward, geo (**IPv4 only**) | |
 | `quota/arp_lock.py`, `arp_scan.py`, `latency_probe.py`, `wifi_probe.py` | rogue detection, ARP gateway-lock, WiFi/LAN + LED probe | |
 | `quota/dns_rules.py` | domain rules/presets/per-client DNS → generated dnsmasq conf (`render_tags`, `[ip6]` in dhcp-host) | |
+| `quota/schedules.py`, `quota/schedule_nft.py` | internet schedules: time math (pure) + the never-flushed `inet quota_schedule` table (kernel timeouts, allowed-site sets fed by dnsmasq `nftset=`) | |
 | `quota/flows.py` | conntrack per-destination byte deltas, IP→name resolution (dnsmasq → reverse DNS → RDAP owner → IP; feeds Live traffic `top_destinations`) | guess app names |
 | `quota/dnslog.py`, `history_analytics.py` | query-log parser; analytics, **Live traffic** (share %, idle, speed) | |
 | `quota/vpn_manager.py` | sing-box supervisor, Clash API, node state | config syntax (→ `vpn_parser`) |

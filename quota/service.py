@@ -27,6 +27,7 @@ exempts a single device from the user's QUOTA block only — an explicit
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import datetime as _dt
 import json
 import logging
@@ -38,6 +39,7 @@ from typing import Any, Optional
 
 from core import timeutil
 from quota import daily_plan as _dp
+from quota import schedules as _sch
 from quota import db as _db
 from quota.guest_state import is_pending_guest
 from quota.vendor import vendor_for
@@ -60,6 +62,7 @@ class QuotaService:
         #: injectable clock (callable returning datetime) for tests
         self._clock = clock
         self._temporary_kicks: dict[str, float] = {}
+        self._allowance_lock = asyncio.Lock()
         #: "everyone is out of quota and nobody has an add-on pack" — the box
         #: opens the internet for all (see refresh_free_mode). Off by default
         #: until the first refresh.
@@ -250,6 +253,10 @@ class QuotaService:
         return timeutil.period_bounds(now, bundle.effective_reset_day)[1].date().isoformat()
 
     async def open_period(self) -> None:
+        async with self._allowance_lock:
+            await self._open_period_locked()
+
+    async def _open_period_locked(self) -> None:
         """Open a fresh period: recompute allowances and set ``period_start`` to now.
 
         Called at startup, at each month roll-over, and by the manual
@@ -257,6 +264,7 @@ class QuotaService:
         touches historical usage rows. With ``reset_day <= 0`` the period is
         opened once and stays open (no automatic roll).
         """
+        pending_voucher_sync = await self.db.pending_guest_voucher_allowance_sync()
         bundle = await self.db.get_bundle()
         now = self._now()
         effective = bundle.effective_reset_day
@@ -274,24 +282,45 @@ class QuotaService:
         # effective<=0 -> period_bounds returns "today"; period_end stays "".
         bundle.period_start = start.date().isoformat()
         bundle.period_end = end.date().isoformat() if effective > 0 else ""
-        await self.db.set_bundle(bundle)
+        await self.db.set_bundle_period(bundle)
+        await self.db.complete_guest_voucher_allowance_sync(pending_voucher_sync)
         log.info("quota period opened: %s -> %s (%d allowances)",
                  bundle.period_start, bundle.period_end or "manual",
                  len(bundle.allowances))
 
     async def recompute_allowances(self) -> None:
+        async with self._allowance_lock:
+            await self._recompute_allowances_locked()
+
+    async def _recompute_allowances_locked(self) -> None:
         """Refresh allowances + period_end without moving ``period_start``.
 
         Used after device edits, bundle changes, and mid-month top-ups of the
         bundle itself. Unlike :meth:`open_period`, it never rolls the period,
         so usage already recorded in the current period is preserved.
         """
+        pending_voucher_sync = await self.db.pending_guest_voucher_allowance_sync()
         bundle = await self.db.get_bundle()
         now = self._now()
         bundle.allowances = await self.compute_allowances()
         bundle.period_end = self._next_period_end(bundle, now)
-        await self.db.set_bundle(bundle)
+        await self.db.set_bundle_allowances(bundle)
+        await self.db.complete_guest_voucher_allowance_sync(pending_voucher_sync)
         log.info("allowances recomputed (%d users)", len(bundle.allowances))
+
+    async def recover_guest_voucher_allowances(self) -> bool:
+        """Retry the derived allowance snapshot after a committed voucher claim.
+
+        The voucher transaction stores this pending marker before commit. A
+        successful recompute clears only markers observed before that recompute;
+        later claims remain queued for the next pass. Recompute derives from
+        current policy, so recovery never reapplies an old quota over edits.
+        """
+        pending = await self.db.pending_guest_voucher_allowance_sync()
+        if not pending:
+            return False
+        await self.recompute_allowances()
+        return True
 
     async def ensure_period(self) -> None:
         """Roll the period if stale, open if missing."""
@@ -1023,6 +1052,133 @@ class QuotaService:
                     "blocked": True,
                     "block_state": _db.BLOCK_ADMIN,
                 }
+        return out
+
+    # -- internet schedules (quota/schedules.py) ------------------------------
+
+    SCHEDULES_KEY = "schedules"
+    SCHEDULE_SITES_KEY = "schedule_sites"
+    MAX_SCHEDULE_SITES = 200
+
+    async def list_schedules(self) -> list[_sch.Schedule]:
+        raw = await self.db.get_setting(self.SCHEDULES_KEY, "")
+        try:
+            data = json.loads(raw) if raw else []
+        except ValueError:
+            log.warning("schedules: stored value is not JSON - ignored")
+            return []
+        return _sch.load(data)
+
+    async def _save_schedules(self, items: list[_sch.Schedule]) -> None:
+        await self.db.set_setting(
+            self.SCHEDULES_KEY, json.dumps([s.to_dict() for s in items]))
+
+    async def _clean_targets(self, sch: _sch.Schedule) -> _sch.Schedule:
+        """Drop people/devices that no longer exist; refuse the box itself."""
+        users = {u.id: u for u in await self.db.list_users()}
+        devices = {d.id: d for d in await self.db.list_devices()}
+        if any(users[i].protected for i in sch.users if i in users):
+            raise ValueError("the gateway itself cannot be put on a schedule")
+        if any(devices[i].mac == _db.GATEWAY_MAC for i in sch.devices if i in devices):
+            raise ValueError("the gateway itself cannot be put on a schedule")
+        u = tuple(i for i in sch.users if i in users)
+        d = tuple(i for i in sch.devices if i in devices)
+        if not u and not d:
+            raise ValueError("pick at least one person or device")
+        return dataclasses.replace(sch, users=u, devices=d)
+
+    async def save_schedule(self, raw: dict[str, Any],
+                            sid: Optional[int] = None) -> _sch.Schedule:
+        """Create (``sid`` None) or replace a schedule. ValueError = bad input,
+        KeyError = unknown id. Bonus time is kept across edits."""
+        items = await self.list_schedules()
+        today = self._now().date()
+        if sid is None:
+            if len(items) >= _sch.MAX_SCHEDULES:
+                raise ValueError(f"at most {_sch.MAX_SCHEDULES} schedules")
+            new_id = max((s.id for s in items), default=0) + 1
+            sch = dataclasses.replace(_sch.normalize(raw, new_id, today),
+                                      paused_until=0.0)
+            sch = await self._clean_targets(sch)
+            items.append(sch)
+        else:
+            idx = next((i for i, s in enumerate(items) if s.id == sid), None)
+            if idx is None:
+                raise KeyError(sid)
+            sch = dataclasses.replace(_sch.normalize(raw, sid, today),
+                                      paused_until=items[idx].paused_until)
+            sch = await self._clean_targets(sch)
+            items[idx] = sch
+        await self._save_schedules(items)
+        return sch
+
+    async def delete_schedule(self, sid: int) -> bool:
+        items = await self.list_schedules()
+        keep = [s for s in items if s.id != sid]
+        if len(keep) == len(items):
+            return False
+        await self._save_schedules(keep)
+        return True
+
+    async def pause_schedule(self, sid: int, minutes: int) -> _sch.Schedule:
+        """Bonus time: the schedule cuts nobody for ``minutes`` from now
+        (0 = end the bonus time now)."""
+        if not 0 <= int(minutes) <= _sch.MAX_PAUSE_MIN:
+            raise ValueError(f"minutes must be 0..{_sch.MAX_PAUSE_MIN}")
+        items = await self.list_schedules()
+        idx = next((i for i, s in enumerate(items) if s.id == sid), None)
+        if idx is None:
+            raise KeyError(sid)
+        until = self._now().timestamp() + int(minutes) * 60 if minutes else 0.0
+        items[idx] = dataclasses.replace(items[idx], paused_until=until)
+        await self._save_schedules(items)
+        return items[idx]
+
+    async def schedule_sites(self) -> list[str]:
+        raw = await self.db.get_setting(self.SCHEDULE_SITES_KEY, "")
+        try:
+            data = json.loads(raw) if raw else []
+        except ValueError:
+            return []
+        return [str(x) for x in data if isinstance(x, str)] if isinstance(data, list) else []
+
+    async def set_schedule_sites(self, sites: list[str]) -> list[str]:
+        from quota.dns_rules import normalize_pattern
+        clean: list[str] = []
+        for s in sites:
+            if not str(s).strip():
+                continue
+            try:
+                d = normalize_pattern(str(s))
+            except ValueError:
+                raise ValueError(f"not a valid site: {s!r}") from None
+            if d not in clean:
+                clean.append(d)
+        if len(clean) > self.MAX_SCHEDULE_SITES:
+            raise ValueError(f"at most {self.MAX_SCHEDULE_SITES} sites")
+        await self.db.set_setting(self.SCHEDULE_SITES_KEY, json.dumps(clean))
+        return clean
+
+    async def schedule_cuts(self, now: Optional[_dt.datetime] = None
+                            ) -> dict[str, _sch.Cut]:
+        """MAC -> the schedule cut running right now (the box is never cut)."""
+        schedules = await self.list_schedules()
+        if not schedules:
+            return {}
+        devices = await self.db.list_devices()
+        return _sch.resolve(schedules, devices, now or self._now(),
+                            skip_macs={_db.GATEWAY_MAC})
+
+    async def schedule_overview(self, now: Optional[_dt.datetime] = None
+                                ) -> list[dict[str, Any]]:
+        now = now or self._now()
+        devices = await self.db.list_devices()
+        out = []
+        for s in await self.list_schedules():
+            row = s.to_dict()
+            row["state"] = _sch.state(s, now).to_dict()
+            row["device_count"] = len(_sch.target_device_ids(s, devices))
+            out.append(row)
         return out
 
     # -- milestone notifications (page-only, per-user) ------------------------
